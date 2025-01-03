@@ -24,7 +24,7 @@
 #ifndef _shmoo_cursor_h
 #define _shmoo_cursor_h
 
-#include <stdint.h>
+#include <stdint.h>         /* uint8_t, uint64_t */
 
 #include <shmoo/compile.h>
 
@@ -33,19 +33,70 @@ __CDECL_BEG
 /*forward*/ struct _shmoo_cursor;
 typedef     struct _shmoo_cursor shmoo_cursor_t;
 
+/* shmoo_cursor_t is like a shmoo_string_t, and can be
+ * cast-and-passed as one, but the cursor marks the
+ * starting offset within a larger buffer (like a file).
+ * Like shmoo_string_t, this should model iovec on UNIX
+ * platforms, and whatever Windows calls their similar
+ * structure.
+ */
 struct _shmoo_cursor {
-    uint64_t        from;
-    uint64_t        size;
+#if defined(_Win32) || defined(_Win64)
+    size_t          size;
     const uint8_t*  data;
+#else
+    const uint8_t*  data;
+    size_t          size;
+#endif
+    uint64_t        from;
 };
 
-extern int shmoo_cursor_make    (shmoo_cursor_t**, const uint8_t*, uint64_t);
-extern int shmoo_cursor_dest    (shmoo_cursor_t**);
-extern int shmoo_cursor_init    (shmoo_cursor_t*, uint64_t, uint64_t, const uint8_t*);
-extern int shmoo_cursor_from    (const shmoo_cursor_t*, uint64_t*);
-extern int shmoo_cursor_data    (const shmoo_cursor_t*, uint64_t, const uint8_t**, uint64_t*);
-extern int shmoo_cursor_size    (const shmoo_cursor_t*, uint64_t*);
-extern int shmoo_cursor_copy    (const shmoo_cursor_t*, uint64_t, uint64_t, uint8_t*);
+extern int shmoo_cursor_make (
+    shmoo_cursor_t**        __cur,
+    const uint8_t*          __data,
+    size_t                  __size,
+    uint64_t                __offset
+);
+
+extern int shmoo_cursor_dest (
+    shmoo_cursor_t**        __curp
+);
+
+extern int shmoo_cursor_init (
+    shmoo_cursor_t*         __cur,
+    const uint8_t*          __data,
+    size_t                  __size,
+    uint64_t                __offset
+);
+
+extern int shmoo_cursor_from (
+    const shmoo_cursor_t*   __cur,
+    uint64_t*               __fromp
+);
+
+extern int shmoo_cursor_data (
+    const shmoo_cursor_t*   __cur,
+    size_t                  __offset,
+    const uint8_t**         __datap,
+    size_t*                 __leftp
+);
+
+extern int shmoo_cursor_size (
+    const shmoo_cursor_t*   __cur,
+    size_t*                 __sizep
+);
+
+extern size_t shmoo_cursor_copy (
+    const shmoo_cursor_t*   __cur,
+    size_t                  __offset,
+    size_t                  __length,
+    uint8_t*                __dest
+);
+
+inline shmoo_cursor_t shmoo_cursor (const uint8_t* data, size_t length, uint64_t from) {
+    shmoo_cursor_t cur = { .data = data, .size = length, .from = from };
+    return cur;
+}
 
 __CDECL_END
 
