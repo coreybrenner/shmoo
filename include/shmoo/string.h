@@ -33,17 +33,60 @@ __CDECL_BEG
 /*forward*/ struct _shmoo_string;
 typedef     struct _shmoo_string shmoo_string_t;
 
+/* Align this structure as much as possible with struct iovec.
+ * Windows has a similar structure used for similar things, but
+ * its members are backwards of iovec.  Strings are read-only
+ * views on a buffer, where it might be useful to readv().
+ */
 struct _shmoo_string {
-    uint64_t       size;
+#if defined(_Win32) || defined(_Win64)
+    size_t         size;
     const uint8_t* data;
+#else
+    const uint8_t* data;
+    size_t         size;
+#endif
 };
 
-extern int shmoo_string_data    (const shmoo_string_t*, uint64_t, uint8_t**, uint64_t*);
-extern int shmoo_string_size    (const shmoo_string_t*, uint64_t*);
-extern int shmoo_string_make    (shmoo_string_t**, const uint8_t*, uint64_t);
-extern int shmoo_string_dest    (shmoo_string_t**);
-extern int shmoo_string_init    (shmoo_string_t*, const uint8_t*, uint64_t);
-extern int shmoo_string_copy    (const shmoo_string_t*, uint64_t, uint64_t, uint8_t*);
+extern int shmoo_string_data (
+    const shmoo_string_t*   __str,
+    size_t                  __offset,
+    const uint8_t**         __datap,
+    size_t*                 __leftp
+);
+
+extern int shmoo_string_size (
+    const shmoo_string_t*   __str,
+    size_t*                 __sizep
+);
+
+extern int shmoo_string_make (
+    shmoo_string_t**        __strp,
+    const uint8_t*          __data,
+    size_t                  __size
+);
+
+extern int shmoo_string_dest (
+    shmoo_string_t**        __strp  /* pointer set to 0 after free() */
+);
+
+extern int shmoo_string_init (
+    shmoo_string_t*         __str,
+    const uint8_t*          __data,
+    size_t                  __size
+);
+
+extern size_t shmoo_string_copy (
+    const shmoo_string_t*   __str,
+    size_t                  __offset,
+    size_t                  __length,
+    uint8_t*                __dest
+);
+
+inline shmoo_string_t shmoo_string (const uint8_t* data, size_t size) {
+    shmoo_string_t str = { .data = data, .size = size };
+    return str;
+}
 
 __CDECL_END
 
