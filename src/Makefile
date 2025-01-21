@@ -21,7 +21,7 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
-SRCS := input.c vector.c string.c
+SRCS := input.c vector.c string.c cursor.c char.c
 OBJS := $(SRCS:%.c=%.o)
 LIBS := shmoo
 
