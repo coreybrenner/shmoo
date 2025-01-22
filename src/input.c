@@ -130,121 +130,115 @@ struct _shmoo_input_ipv6 {
 };
 #endif
 
-static int      _input_mmap_dest (shmoo_input_t**);
-static uint64_t _input_mmap_more (shmoo_input_t*);
-static int      _input_mmap_shut (shmoo_input_t*);
+static int _input_mmap_more (shmoo_input_t*);
+static int _input_mmap_shut (shmoo_input_t*);
+static int _input_mmap_dest (shmoo_input_t**);
 
 static const shmoo_input_type_t _input_mmap_type = {
-    .name = "input_mmap",
-    .dest = _input_mmap_dest,
-    .more = _input_mmap_more,
-    .shut = _input_mmap_shut,
+    .type_name = "input_mmap",
+    .more      = _input_mmap_more,
+    .shut      = _input_mmap_shut,
+    .dest      = _input_mmap_dest,
 };
 
-static int      _input_text_dest (shmoo_input_t**);
+static int _input_text_dest (shmoo_input_t**);
 
 static const shmoo_input_type_t _input_text_type = {
-    .name = "input_text",
-    .dest = _input_text_dest,
-    .more = _input_mmap_more,
-    .shut = _input_mmap_shut,
+    .type_name = "input_text",
+    .more      = _input_mmap_more,
+    .shut      = _input_mmap_shut,
+    .dest      = _input_text_dest,
 };
 
 static const shmoo_input_type_t _input_buff_type = {
-    .name = "input_buff",
-    .dest = _input_text_dest,
-    .more = _input_mmap_more,
-    .shut = _input_mmap_shut,
+    .type_name = "input_buff",
+    .more      = _input_mmap_more,
+    .shut      = _input_mmap_shut,
+    .dest      = _input_text_dest,
 };
 
-static int      _input_pipe_dest (shmoo_input_t**);
-static uint64_t _input_pipe_more (shmoo_input_t*);
-static int      _input_pipe_shut (shmoo_input_t*);
+static int _input_pipe_dest (shmoo_input_t**);
+static int _input_pipe_more (shmoo_input_t*);
+static int _input_pipe_shut (shmoo_input_t*);
 
 static const shmoo_input_type_t _input_pipe_type = {
-    .name = "input_pipe",
-    .dest = _input_pipe_dest,
-    .more = _input_pipe_more,
-    .shut = _input_pipe_shut,
+    .type_name = "input_pipe",
+    .more      = _input_pipe_more,
+    .shut      = _input_pipe_shut,
+    .dest      = _input_pipe_dest,
 };
 
 static const shmoo_input_type_t _input_unix_type = {
-    .name = "input_unix",
-    .dest = _input_pipe_dest,
-    .more = _input_pipe_more,
-    .shut = _input_pipe_shut,
+    .type_name = "input_unix",
+    .more      = _input_pipe_more,
+    .shut      = _input_pipe_shut,
+    .dest      = _input_pipe_dest,
 };
 
-static int      _input_file_dest (shmoo_input_t**);
-static uint64_t _input_file_more (shmoo_input_t*);
-static int      _input_file_shut (shmoo_input_t*);
+static int _input_file_dest (shmoo_input_t**);
+static int _input_file_more (shmoo_input_t*);
+static int _input_file_shut (shmoo_input_t*);
 
 static const shmoo_input_type_t _input_file_type = {
-    .name = "input_file",
-    .dest = _input_file_dest,
-    .more = _input_file_more,
-    .shut = _input_file_shut,
+    .type_name = "input_file",
+    .more      = _input_file_more,
+    .shut      = _input_file_shut,
+    .dest      = _input_file_dest,
 };
 
 static const shmoo_vector_type_t _input_part_vector_type = {
-    .name = "input_part_vector",
-    .elem = sizeof(shmoo_cursor_t),
+    .type_name = "input_part_vector",
+    .elem_size = sizeof(shmoo_cursor_t),
 };
 
 static int _input_mmap_open_path (
     shmoo_input_t**,
     shmoo_string_t,
-    const shmoo_origin_t*,
     const struct stat*
 );
 static int _input_mmap_open_desc (
     shmoo_input_t**,
     shmoo_handle_t,
-    const shmoo_origin_t*,
     const struct stat*
 );
 static int _input_pipe_open_path (
     shmoo_input_t**,
     shmoo_string_t,
-    const shmoo_origin_t*,
     const struct stat*
 );
 static int _input_pipe_open_desc (
     shmoo_input_t**,
     shmoo_handle_t,
-    const shmoo_origin_t*,
     const struct stat*
 );
 static int _input_sock_open_desc (
     shmoo_input_t**,
     shmoo_handle_t,
-    const shmoo_origin_t*,
     const struct stat*
 );
 static int _input_unix_open_path (
     shmoo_input_t**,
     shmoo_string_t,
-    const shmoo_origin_t*,
     const struct stat*
 );
 static int _input_unix_open_desc (
     shmoo_input_t**,
     shmoo_handle_t,
-    const shmoo_origin_t*,
     const struct stat*
 );
 static int _input_more_trim (
     shmoo_input_t*
 );
-static size_t _input_more_grow (
-    shmoo_input_t*
+static int _input_more_grow (
+    shmoo_input_t*,
+    size_t*
 );
 
 /* public data */
 
 const shmoo_vector_type_t shmoo_input_vector_type = {
-    .name = "input_vector",
-    .elem = sizeof(shmoo_input_t*),
+    .type_name = "input_vector",
+    .elem_size = sizeof(shmoo_input_t*),
 };
 
 /* public functions */
@@ -253,21 +247,23 @@ const shmoo_vector_type_t shmoo_input_vector_type = {
 int
 shmoo_input_open_file (
     shmoo_input_t**         inp,
-    FILE*                   file,
-    const shmoo_origin_t*   orig
+    FILE*                   file
     )
 {
     shmoo_handle_t  desc = fileno(file);
-    _input_file_t*  in   = 0;
-    size_t          size = (sizeof(*in) + snprintf(0, 0, FPNAME, desc));
+    _input_file_t*  in   = NULL;
+    int             err  = 0;
+    size_t          size = (sizeof(*in) + snprintf(NULL, 0, FPNAME, desc));
 
     if (! inp || ! file) {
-        return 0;
-    } else if (feof(file) || ferror(file)) {
-        return 0;
+        return EINVAL;
+    } else if (feof(file)) {
+        return EOF;
+    } else if ((err = ferror(file))) {
+        return err;
     } else if (! (in = calloc(1, size))) {
-        return 0;
-    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+        return errno;
+    } else if ((err = shmoo_vector_init(&in->head.part, &_input_part_vector_type))) {
         goto error;
     }
 
@@ -275,73 +271,71 @@ shmoo_input_open_file (
     in->head.name = (const uint8_t*) &in[1];
     snprintf((char*) &in[1], (size - sizeof(*in)), FPNAME, desc);
     in->head.mtim = time(0);
-    in->head.orig = orig;
     in->file      = file;
-    return 1;
+    return 0;
 
 error:
+    shmoo_vector_free(&in->head.part);
     free(in);
-    return 0;
+    return err;
 }
 
 int
 shmoo_input_open_path (
     shmoo_input_t**         inp,
-    shmoo_string_t          path,
-    const shmoo_origin_t*   orig
+    shmoo_string_t          path
     )
 {
     struct stat info;
     char*       buff;
 
-    if (! inp || ! path.text || ! path.size) {
-        return 0;
-    } else if (! buff = alloca(path.size + 1)) {
-        return 0;
+    if (! inp || ! path.data || ! path.size) {
+        return EINVAL;
+    } else if (! (buff = alloca(path.size + 1))) {
+        return errno;
     }
     (void) memcpy(buff, path.data, path.size);
     buff[path.size] = '\0';
 
     if (-1 == stat(buff, &info)) {
-        return 0;
+        return errno;
     } else if (S_ISREG(info.st_mode)) {
-        return (_input_mmap_open_path(inp, path, orig, &info)
-             || _input_pipe_open_path(inp, path, orig, &info)
+        return (_input_mmap_open_path(inp, path, &info)
+             || _input_pipe_open_path(inp, path, &info)
                );
     } else if (S_ISSOCK(info.st_mode)) {
-        return _input_unix_open_path(inp, path, orig, &info);
+        return _input_unix_open_path(inp, path, &info);
     } else if (S_ISFIFO(info.st_mode)) {
-        return _input_pipe_open_path(inp, path, orig, &info);
+        return _input_pipe_open_path(inp, path, &info);
     } else {
-        return 0;
+        return EBADF;
     }
 }
 
 int
 shmoo_input_open_desc (
     shmoo_input_t**         inp,
-    shmoo_handle_t          desc,
-    const shmoo_origin_t*   orig
+    shmoo_handle_t          desc
     )
 {
     struct stat info;
     
     if (! inp || (desc < 0)) {
-        return 0;
+        return EINVAL;
     } else if (-1 == fstat(desc, &info)) {
-        return 0;
+        return errno;
     }
 
     if (S_ISREG(info.st_mode)) {
-        return (_input_mmap_open_desc(inp, desc, orig, &info)
-             || _input_pipe_open_desc(inp, desc, orig, &info)
+        return (_input_mmap_open_desc(inp, desc, &info)
+             || _input_pipe_open_desc(inp, desc, &info)
                );
     } else if (S_ISSOCK(info.st_mode)) {
-        return _input_sock_open_desc(inp, desc, orig, &info);
+        return _input_sock_open_desc(inp, desc, &info);
     } else if (S_ISFIFO(info.st_mode)) {
-        return _input_pipe_open_desc(inp, desc, orig, &info);
+        return _input_pipe_open_desc(inp, desc, &info);
     } else {
-        return 0;
+        return EBADF;
     }
 }
 
@@ -353,8 +347,9 @@ shmoo_input_data (
     size_t*                 leftp
     )
 {
-    uint32_t       indx;
-    uint32_t       high;
+    size_t         indx = 0;
+    size_t         high = 0;
+    int            err  = 0;
     shmoo_cursor_t curs = {
         .size = 0,
         .data = 0,
@@ -362,24 +357,24 @@ shmoo_input_data (
     };
 
     if (! in || ! datap) {
-        return 0;
+        return EINVAL;
     }
 
     while (from >= in->size) {
-        if (! in->type->more(in)) {
+        if ((err = in->type->more(in))) {
             break;
         }
     }
     if (from >= in->size) {
-        return 0;
-    } else if (! shmoo_vector_used(&in->part, &high)) {
-        return 0;
+        return ERANGE;
+    } else if ((err = shmoo_vector_used(&in->part, &high))) {
+        return err;
     }
     
     /* Climb the vector of data buffers to find the right one. */
     for (indx = 0; indx < high; ++indx) {
-        if (! shmoo_vector_peek(&in->part, indx, &curs)) {
-            return 0;
+        if ((err = shmoo_vector_peek(&in->part, indx, &curs))) {
+            return err;
         } else if (from > (curs.from + curs.size)) {
             continue;
         } else {
@@ -390,20 +385,24 @@ shmoo_input_data (
     /* All done.  Populate the result. */
     *datap = (curs.data + (from - curs.from));
     *leftp = (curs.size - (from - curs.from));
-    return 1;
+    return 0;
 }
 
-uint64_t
+int
 shmoo_input_copy (
     shmoo_input_t*          in,
     uint64_t                from,
     uint64_t                want,
-    uint8_t*                into
+    uint8_t*                into,
+    uint64_t*               usedp
     )
 {
     uint32_t       indx = 0;
-    uint32_t       high = 0;
+    size_t         high = 0;
     uint64_t       used = 0;
+    const uint8_t* data = NULL;
+    size_t         left = 0;
+    int            err  = 0;
     shmoo_cursor_t curs = {
         .size = 0,
         .data = 0,
@@ -411,17 +410,17 @@ shmoo_input_copy (
     };
 
     if (! in || ! into) {
-        return 0;
-    } else if (! shmoo_input_data(in, from, &curs, want)) {
-        return 0;
-    } else if (! shmoo_vector_used(&in->part, &high)) {
-        return 0;
+        return EINVAL;
+    } else if ((err = shmoo_input_data(in, from, &data, &left))) {
+        return err;
+    } else if ((err = shmoo_vector_used(&in->part, &high))) {
+        return err;
     }
 
     /* Find the right data buffer to start the copy from. */
     for (indx = 0; indx < high; ++indx) {
-        if (! shmoo_vector_peek(&in->part, indx, &curs)) {
-            return 0;
+        if ((err = shmoo_vector_peek(&in->part, indx, &curs))) {
+            return err;
         } else if (from > (curs.from + curs.size)) {
             continue;
         } else {
@@ -441,14 +440,14 @@ shmoo_input_copy (
         (void) memcpy((into + used), curs.data, copy);
         used += copy;
         want -= copy;
-        if (0 == want) {
+        if (! want) {
             break;
-        } else if (! shmoo_vector_peek(&in->part, indx, &curs)) {
-            break;
+        } else if ((err = shmoo_vector_peek(&in->part, indx, &curs))) {
+            return err;
         }
     }
-
-    return used;
+    *usedp = used;
+    return 0;
 }
 
 /* static functions */
@@ -457,13 +456,12 @@ int
 _input_mmap_open_path (
     shmoo_input_t**         inp,
     shmoo_string_t          path,
-    const shmoo_origin_t*   orig,
     const struct stat*      info
     )
 {
-    _input_mmap_t* in   = 0;
-    size_t         size = (sizeof(*in) + path.size + 1);
+    _input_mmap_t* in   = NULL;
     int            desc = -1;
+    int            err  = 0;
     shmoo_cursor_t curs = {
         .from = 0,
         .data = MAP_FAILED,
@@ -471,46 +469,48 @@ _input_mmap_open_path (
     };
 
     if (! inp || ! path.data || ! path.size) {
-        return 0;
+        return EINVAL;
     } else if (! (in = calloc(1, (sizeof(*in) + path.size + 1)))) {
-        return 0;
+        return errno;
     }
     in->head.type = &_input_mmap_type;
     in->head.size = info->st_size;
     in->head.name = (const uint8_t*) &in[1];
     (void) memcpy(&in[1], path.data, path.size);
-    path.data[path.size] = '\0';
+    *((uint8_t*) &in[1] + path.size) = '\0';
     in->head.mtim = info->st_mtime;
-    in->head.orig = orig;
 
     desc = open((const char*) in->head.name, O_RDONLY);
     if (-1 == desc) {
+        err = errno;
         goto error;
     }
     curs.from = 0;
     curs.size = info->st_size;
     curs.data = mmap(0, info->st_size, PROT_READ, MAP_SHARED, desc, 0);
-    if (-1 == close(desc)) {
+    if (MAP_FAILED == curs.data) {
+        err = errno;
         goto error;
-    } else if (desc = -1, MAP_FAILED == curs.data) {
+    } else if (-1 == close(desc)) {
+        err = errno;
         goto error;
-    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+    } else if ((err = shmoo_vector_init(&in->head.part, &_input_part_vector_type))) {
         goto error;
-    } else if (! shmoo_vector_insert_tail(&in->head.part, &curs)) {
+    } else if ((err = shmoo_vector_insert_tail(&in->head.part, &curs))) {
         goto error;
     }
     *inp = &in->head;
-    return 1;
+    return 0;
 
 error:
     if (-1 != desc) {
         (void) close(desc);
     }
     if (curs.data != MAP_FAILED) {
-        (void) munmap(curs.data, curs.size);
+        (void) munmap((void*) curs.data, curs.size);
     }
     free(in);
-    return 0;
+    return err;
 }
 
 #define FDNAME "file_descriptor: %d"
@@ -518,31 +518,30 @@ int
 _input_mmap_open_desc (
     shmoo_input_t**         inp,
     shmoo_handle_t          desc,
-    const shmoo_origin_t*   orig,
     const struct stat*      info
     )
 {
-    _input_mmap_t* in   = 0;
-    size_t         size = (sizeof(*in) + snprintf(0, 0, FDNAME, desc));
+    _input_mmap_t* in   = NULL;
+    size_t         size = (sizeof(*in) + snprintf(NULL, 0, FDNAME, desc));
+    int            err  = 0;
     shmoo_cursor_t curs;
 
     if (! inp) {
-        return 0;
+        return EINVAL;
     }
 
-    curs = {
-        .from = 0,
-        .size = info->st_size,
-        .data = mmap(0, info->st_size, PROT_READ, MAP_SHARED, desc, 0),
-    };
+    curs.from = 0;
+    curs.size = info->st_size;
+    curs.data = mmap(0, info->st_size, PROT_READ, MAP_SHARED, desc, 0);
 
     if (MAP_FAILED == curs.data) {
-        return 0;
+        return errno;
     } else if (! (in = calloc(1, size))) {
+        err = errno;
         goto error;
-    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+    } else if ((err = shmoo_vector_init(&in->head.part, &_input_part_vector_type))) {
         goto error;
-    } else if (! shmoo_vector_insert_tail(&in->head.part, &curs)) {
+    } else if ((err = shmoo_vector_insert_tail(&in->head.part, &curs))) {
         goto error;
     }
     in->head.type = &_input_mmap_type;
@@ -550,24 +549,23 @@ _input_mmap_open_desc (
     in->head.name = (const uint8_t*) &in[1];
     snprintf((char*) &in[1], (size - sizeof(*in)), FDNAME, desc);
     in->head.mtim = info->st_mtime;
-    in->head.orig = orig;
     *inp = &in->head;
-    return 1;
+    return 0;
 
 error:
     if (MAP_FAILED != curs.data) {
-        (void) munmap(curs.data, curs.size);
+        (void) munmap((void*) curs.data, curs.size);
     }
     free(in);
-    return 0;
+    return err;
 }
 
-uint64_t
+int
 _input_mmap_more (
     shmoo_input_t*          in
     )
 {
-    return 0;
+    return EBADF;
     (void) in;
 }
 
@@ -576,7 +574,8 @@ _input_mmap_shut (
     shmoo_input_t*          in
     )
 {
-    return (in ? 1 : 0);
+    return 0;
+    (void) in;
 }
 
 int
@@ -585,12 +584,12 @@ _input_mmap_dest (
     )
 {
     shmoo_string_t data;
-    _input_mmap_t* in = 0;
+    _input_mmap_t* in = NULL;
 
     if (! inp) {
-        return 0;
+        return EINVAL;
     } else if (! *inp) {
-        return 1;
+        return 0;
     }
 
     in = (_input_mmap_t*) *inp;
@@ -599,28 +598,27 @@ _input_mmap_dest (
     }
     shmoo_vector_free(&in->head.part);
     free(in);
-    *inp = 0;
-
-    return 1;
+    *inp = NULL;
+    return 0;
 }
 
 int
 _input_pipe_open_path (
     shmoo_input_t**         inp,
     shmoo_string_t          path,
-    const shmoo_origin_t*   orig,
     const struct stat*      info
     )
 {
-    _input_pipe_t* in   = 0;
+    _input_pipe_t* in   = NULL;
     size_t         size = (sizeof(*in) + path.size + 1);
     shmoo_handle_t desc = -1;
+    int            err  = 0;
 
     if (! inp) {
-        return 0;
+        return EINVAL;
     } else if (! (in = calloc(1, size))) {
-        return 0;
-    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+        return errno;
+    } else if ((err = shmoo_vector_init(&in->head.part, &_input_part_vector_type))) {
         goto error;
     }
     in->head.type = &_input_pipe_type;
@@ -628,22 +626,22 @@ _input_pipe_open_path (
     in->head.name = (const uint8_t*) &in[1];
     memcpy(&in[1], path.data, path.size);
     in->head.mtim = time(0);
-    in->head.orig = orig;
 
     desc = open((const char*) in->head.name, O_RDONLY);
     if (-1 == desc) {
+        err = errno;
         goto error;
     }
     in->desc = desc;
     *inp = &in->head;
-    return 1;
+    return 0;
 
 error:
     if (-1 == desc) {
         (void) close(desc);
     }
     free(in);
-    return 0;
+    return err;
 
     (void) info;
 }
@@ -652,18 +650,18 @@ int
 _input_pipe_open_desc (
     shmoo_input_t**         inp,
     shmoo_handle_t          desc,
-    const shmoo_origin_t*   orig,
     const struct stat*      info
     )
 {
-    _input_pipe_t* in   = 0;
-    size_t         size = (sizeof(*in) + snprintf(0, 0, FDNAME, desc));
+    _input_pipe_t* in   = NULL;
+    size_t         size = (sizeof(*in) + snprintf(NULL, 0, FDNAME, desc));
+    int            err  = 0;
 
     if (! inp || (desc < 0)) {
-        return 0;
+        return EINVAL;
     } else if (! (in = calloc(1, size))) {
-        return 0;
-    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+        return errno;
+    } else if ((err = shmoo_vector_init(&in->head.part, &_input_part_vector_type))) {
         goto error;
     }
     in->head.type = &_input_pipe_type;
@@ -671,14 +669,13 @@ _input_pipe_open_desc (
     in->head.name = (const uint8_t*) &in[1];
     snprintf((char*) &in[1], size, FDNAME, desc);
     in->head.mtim = time(0);
-    in->head.orig = orig;
     in->desc      = desc;
     *inp = &in->head;
-    return 1;
+    return 0;
 
 error:
     free(in);
-    return 0;
+    return err;
 
     (void) info;
 }
@@ -691,10 +688,11 @@ _input_pipe_shut (
     _input_pipe_t* in = (_input_pipe_t*) _in;
 
     if (! in) {
+        return EINVAL;
+    } else if (in->desc < 0) {
         return 0;
-    } else if ((in->desc >= 0) && (-1 != close(in->desc))) {
-        in->desc = -1;
-        return 1;
+    } else if (-1 == close(in->desc)) {
+        return errno;
     } else {
         return 0;
     }
@@ -705,7 +703,7 @@ _input_pipe_dest (
     shmoo_input_t**         inp
     )
 {
-    _input_pipe_t* in   = 0;
+    _input_pipe_t* in   = NULL;
     shmoo_cursor_t curs = {
         .from = 0,
         .data = 0,
@@ -713,42 +711,38 @@ _input_pipe_dest (
     };
 
     if (! inp) {
-        return 0;
+        return EINVAL;
     } else if (! *inp) {
-        return 1;
-    }
-    in = (_input_pipe_t*) *inp;
-    if (! in) {
         return 0;
     } else if (in->desc >= 0) {
         (void) close(in->desc);
     }
-    while (shmoo_vector_remove_tail(&in->head.part, &curs)) {
-        (void) munmap(curs.data, curs.size);
+    while (! shmoo_vector_remove_tail(&in->head.part, &curs)) {
+        (void) munmap((void*) curs.data, curs.size);
     }
     shmoo_vector_free(&in->head.part);
     free(in);
-    *inp = 0;
+    *inp = NULL;
 
-    return 1;
+    return 0;
 }
 
-size_t
+int
 _input_more_grow (
-    shmoo_input_t*          in
+    shmoo_input_t*          in,
+    size_t*                 leftp
     )
 {
-    shmoo_cursor_t* last = 0;
-    uint8_t*        mold = 0;
+    shmoo_cursor_t* last = NULL;
+    uint8_t*        mold = NULL;
     uint8_t*        mnew = MAP_FAILED;
     size_t          page = sysconf(_SC_PAGE_SIZE);
-    uint8_t*        more = 0;
     size_t          left = 0;
 
     if ((last = (shmoo_cursor_t*) shmoo_vector_tail(&in->part))) {
         if (in->size != (last->from + last->size)) {
             /* There is empty memory at the end of the last memory map. */
-            left = (last->size - (in->head.size - last->from));
+            left = (last->size - (in->size - last->from));
             mnew = 0;
         } else {
             /* Try to join this memory blob directly to the last one. */
@@ -782,6 +776,7 @@ _input_more_grow (
         }
     }
     if (MAP_FAILED == mnew) {
+        int err = 0;
         shmoo_cursor_t curs = {
             .from = in->size,
             .data = mmap(0, page, (PROT_READ|PROT_WRITE),
@@ -790,15 +785,16 @@ _input_more_grow (
             .size = page,
         };
         if (MAP_FAILED == curs.data) {
-            return 0;
-        } else if (! shmoo_vector_insert_tail(&in->part, &curs)) {
-            (void) munmap(curs.data, curs.size);
-            return 0;
+            return errno;
+        } else if ((err = shmoo_vector_insert_tail(&in->part, &curs))) {
+            (void) munmap((void*) curs.data, curs.size);
+            return err;
         }
         left = page;
     }
 
-    return left;
+    *leftp = left;
+    return 0;
 }
 
 int
@@ -806,81 +802,75 @@ _input_more_trim (
     shmoo_input_t*          in
     )
 {
-    shmoo_cursor_t* last;
+    shmoo_cursor_t* last = NULL;
     size_t          page = sysconf(_SC_PAGE_SIZE);
+    int             err  = 0;
 
-    if (! (last = (shmoo_cursor_t*) shmoo_vector_tail(&in->part))) {
-        /* input empty? */
-        return 0;
+    if ((err = shmoo_vector_obtain_tail(&in->part, &last))) {
+        return err;
     } else if (in->size == last->from) {
         /* entire last cursor is a new allocation */
         shmoo_cursor_t curs;
-        if (! shmoo_vector_remove_tail(&in->part, &curs)) {
-            return 0;
+        if (! (err = shmoo_vector_remove_tail(&in->part, &curs))) {
+            (void) munmap((void*) curs.data, curs.size);
         }
-        (void) munmap(curs.data, curs.size);
-        return 1;
+        return err;
     } else if ((in->size - last->from) < page) {
         /* did not allocate new memory */
         return 0;
     } else {
         /* last cursor had allocation joined */
-        uint8_t* mnew;
 #ifdef _USE_GNU
         uint8_t* mnew = mremap(last->data, last->size,
                                (last->size - page),
                                MREMAP_MAYMOVE
                               );
         if (MAP_FAILED == mnew) {
-            return 0;
+            return errno;
         } else {
             last->data  = mnew;
         }
 #else
-        (void) munmap((last->data + (last->size - page)), page);
+        (void) munmap((void*) (last->data + (last->size - page)), page);
 #endif
         last->size -= page;
-        return 1;
+        return 0;
     }
 }
 
 /* Read a pipe a page at a time, trying to merge mappings. */
-uint64_t
+int
 _input_pipe_more (
     shmoo_input_t*          _in
     )
 {
     _input_pipe_t*  in   = (_input_pipe_t*) _in;
-    shmoo_cursor_t* last = 0;
-    uint8_t*        more = 0;
+    shmoo_cursor_t  last = { 0 };
+    uint8_t*        more = NULL;
     size_t          used = 0;
     size_t          left = 0;
     int             got  = 0;
+    int             err  = 0;
 
     if (! in || (in->desc < 0)) {
-        return 0;
-    } else if (! (left = _input_more_grow(_in))) {
-        return 0;
-    } else if (! (last = (shmoo_cursor_t*) shmoo_vector_tail(&in->head.part))) {
+        return EINVAL;
+    } else if ((err = _input_more_grow(_in, &left))) {
+        return err;
+    } else if ((err = shmoo_vector_obtain_tail(&in->head.part, &last))) {
         return 0;
     }
-    more = (last->data + (in->head.size - last->from));
+    more = (uint8_t*) (last.data + (in->head.size - last.from));
 
     /* Read into the newly-allocated buffer. */
     for (used = 0; used < left; ) {
         got = read(in->desc, (more + used), (left - used));
-        if (got > 0) {
+        if ((got < 0) && (errno == EINTR)) {
+        } else if (got > 0) {
             used += got;
         } else {
+            err = (got ? errno : EOF);
             break;
         }
-    }
-
-    /* If we read no data, unmap the new allocations. */
-    if (used) {
-        in->head.size += used;
-    } else if (left == sysconf(_SC_PAGE_SIZE)) {
-        _input_more_trim(_in);
     }
 
     /* Last read() got a 0 result, meaning EOF. */
@@ -890,23 +880,30 @@ _input_pipe_more (
         in->desc = -1;
     }
 
-    return used;
+    /* If we read no data, unmap the new allocations. */
+    if (used) {
+        in->head.size += used;
+    } else if (left != (size_t) sysconf(_SC_PAGE_SIZE)) {
+    } else if ((err = _input_more_trim(_in))) {
+        return err;
+    }
+    return 0;
 }
 
 int
 _input_unix_open_path (
     shmoo_input_t**         inp,
     shmoo_string_t          path,
-    const shmoo_origin_t*   orig,
     const struct stat*      info
     )
 {
-    const struct sockaddr* addr = 0;
+    const struct sockaddr* addr = NULL;
     size_t                 size = 0;
     socklen_t              alen = 0;
     socklen_t              plen = 0;
     int                    desc = -1;
-    _input_unix_t*         in   = 0;
+    _input_unix_t*         in   = NULL;
+    int                    err  = 0;
 
     if ((path.size + 1) >= sizeof(in->addr.sun_path)) {
         size = (sizeof(*in) + ((path.size + 1) - sizeof(in->addr.sun_path)));
@@ -914,8 +911,8 @@ _input_unix_open_path (
         size = sizeof(*in);
     }
     if (! (in = calloc(1, size))) {
-        return 0;
-    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+        return errno;
+    } else if ((err = shmoo_vector_init(&in->head.part, &_input_part_vector_type))) {
         goto error;
     }
     in->head.type = &_input_unix_type;
@@ -924,19 +921,22 @@ _input_unix_open_path (
     in->addr.sun_family = AF_UNIX;
     memcpy(in->addr.sun_path, path.data, path.size);
     in->head.mtim = time(0);
-    in->head.orig = orig;
     addr = (const struct sockaddr*) &in->addr;
 
     alen = (offsetof(struct sockaddr_un, sun_path) + path.size);
     plen = sizeof(in->peer);
     desc = socket(AF_UNIX, SOCK_STREAM, 0);
     if (-1 == desc) {
+        err = errno;
         goto error;
     } else if (-1 == connect(desc, addr, alen)) {
+        err = errno;
         goto error;
     } else if (-1 == shutdown(desc, SHUT_WR)) {
+        err = errno;
         goto error;
     } else if (-1 == getpeername(desc, (struct sockaddr*) &in->peer, &plen)) {
+        err = errno;
         goto error;
     } else if (plen > sizeof(in->peer)) {
         plen = sizeof(in->peer);
@@ -945,14 +945,14 @@ _input_unix_open_path (
     in->plen = plen;
     in->desc = desc;
     *inp     = &in->head;
-    return 1;
+    return 0;
 
 error:
     if (-1 != desc) {
         (void) close(desc);
     }
     free(in);
-    return 0;
+    return err;
 
     (void) info;
 }
@@ -961,46 +961,42 @@ int
 _input_sock_open_desc (
     shmoo_input_t**         inp,
     shmoo_handle_t          desc,
-    const shmoo_origin_t*   orig,
     const struct stat*      info
     )
 {
-    _input_sock_t*      in = 0;
-    struct sockaddr     addr;
-    socklen_t           alen;
+    struct sockaddr     addr = { 0 };
+    socklen_t           alen = 0;
 
     alen = sizeof(addr);
     if (-1 == getsockname(desc, &addr, &alen)) {
-        return 0;
+        return errno;
     }
 
     if (addr.sa_family == AF_UNIX) {
-        return _input_unix_open_desc(inp, desc, orig, info);
+        return _input_unix_open_desc(inp, desc, info);
 //    } else if (addr.sa_family == AF_INET) {
 //    } else if (addr.sa_family == AF_INET6) {
     }
 
-    return 1;
-
-    (void) in;
+    return 0;
 }
 
 int
 _input_unix_open_desc (
     shmoo_input_t**         inp,
     shmoo_handle_t          desc,
-    const shmoo_origin_t*   orig,
     const struct stat*      info
     )
 {
-    _input_unix_t*     in   = 0;
+    _input_unix_t*     in   = NULL;
     size_t             size = 0;
     struct sockaddr_un abuf;
     socklen_t          alen = sizeof(abuf);
     socklen_t          plen = sizeof(abuf);
+    int                err  = 0;
 
     if (-1 == getsockname(desc, (struct sockaddr*) &abuf, &alen)) {
-        return 0;
+        return errno;
     } else if (alen >= sizeof(abuf)) {
         size = (sizeof(*in) + (alen - sizeof(abuf) + 1));
     } else {
@@ -1008,12 +1004,14 @@ _input_unix_open_desc (
     }
 
     if (! (in = calloc(1, size))) {
-        return 0;
+        return errno;
     } else if (-1 == getsockname(desc, (struct sockaddr*) &in->addr, &alen)) {
+        err = errno;
         goto error;
     } else if (-1 == getpeername(desc, (struct sockaddr*) &in->peer, &plen)) {
+        err = errno;
         goto error;
-    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+    } else if ((err = shmoo_vector_init(&in->head.part, &_input_part_vector_type))) {
         goto error;
     } else if (plen > sizeof(in->peer)) {
         plen = sizeof(in->peer);
@@ -1022,61 +1020,69 @@ _input_unix_open_desc (
     in->head.size = 0;
     in->head.name = (const uint8_t*) in->addr.sun_path;
     in->head.mtim = time(0);
-    in->head.orig = orig;
     in->alen = alen;
     in->plen = plen;
     *inp = &in->head;
-    return 1;
+    return 0;
 
 error:
     free(in);
-    return 0;
+    return err;
 
     (void) info;
 }
 
-uint64_t
+int
 _input_file_more (
     shmoo_input_t*          _in
     )
 {
     _input_file_t*  in   = (_input_file_t*) _in;
-    uint8_t*        more = 0;
+    uint8_t*        more = NULL;
+    shmoo_cursor_t  last = { 0 };
+    size_t          left = 0;
     size_t          used = 0;
     size_t          got  = 0;
+    int             err  = 0;
 
     if (! in || ! in->file) {
-        return 0;
-    } else if (! (left = _input_more_grow(_in))) {
-        return 0;
-    } else if (! (last = (shmoo_cursor_t*) shmoo_vector_tail(&in->head.part))) {
-        return 0;
+        return EINVAL;
+    } else if ((err = _input_more_grow(_in, &left))) {
+        return err;
+    } else if ((err = shmoo_vector_obtain_tail(&in->head.part, &last))) {
+        return err;
     }
-    more = (last->data + (in->head.size - last->from));
+    more = (uint8_t*) (last.data + (in->head.size - last.from));
 
     /* Read into the newly-allocated buffer. */
-    for (used = 0; used < want; ) {
-        got = fread((more + used), (want - used), 1, in->file);
+    for (used = 0; used < left; ) {
+        got = fread((more + used), 1, (left - used), in->file);
         if (got > 0) {
             used += got;
-        } else {
-            break;
+            continue;
+        } else if (feof(in->file)) {
+            err = (used ? 0 : EOF);
+        } else if (ferror(in->file)) {
+            if ((err = errno == EINTR)) {
+                continue;
+            }
         }
+        break;
+    }
+
+    /* Last fread() got no data; close the descriptor. */
+    if (feof(in->file)) {
+        (void) fclose(in->file);
+        in->file = NULL;
     }
 
     if (used) {
         in->head.size += used;
-    } else if (left == sysconf(_SC_PAGE_SIZE)) {
-        _input_more_trim(_in);
+    } else if (left == (size_t) sysconf(_SC_PAGE_SIZE)) {
+        err = _input_more_trim(_in);
     }
 
-    /* Last fread() got no data; close the descriptor. */
-    if (! got && feof(in->file)) {
-        (void) fclose(in->file);
-        in->file = 0;
-    }
-
-    return used;
+    return err;
 }
 
 int
@@ -1085,13 +1091,14 @@ _input_file_shut (
     )
 {
     _input_file_t* in = (_input_file_t*) _in;
+
     if (! in) {
-        return 0;
+        return EINVAL;
     } else if (in->file) {
         fclose(in->file);
-        in->file = 0;
+        in->file = NULL;
     }
-    return 1;
+    return 0;
 }
 
 int
@@ -1099,25 +1106,29 @@ _input_file_dest (
     shmoo_input_t**         inp
     )
 {
-    _input_file_t*  in;
-    shmoo_cursor_t  curs;
+    _input_file_t*  in   = NULL;
+    shmoo_cursor_t  curs = {
+        .from = 0,
+        .size = 0,
+        .data = NULL,
+    };
 
     if (! inp) {
-        return 0;
+        return EINVAL;
     } else if (! *inp) {
-        return 1;
+        return 0;
     }
     in = (_input_file_t*) *inp;
     if (in->file) {
         (void) fclose(in->file);
     }
-    while ((shmoo_vector_remove_tail(&in->head.part, &curs))) {
+    while (! (shmoo_vector_remove_tail(&in->head.part, &curs))) {
         (void) munmap((void*) curs.data, curs.size);
     }
     shmoo_vector_free(&in->head.part);
     free(in);
-    *inp = 0;
-    return 1;
+    *inp = NULL;
+    return 0;
 }
 
 int
@@ -1126,27 +1137,24 @@ _input_text_dest (
     )
 {
     if (! inp) {
-        return 0;
-    } else if (! *inp) {
-        return 1;
-    } else if (! shmoo_vector_free(&in->head.part)) {
-        return 0;
-    } else {
+        return EINVAL;
+    } else if (*inp) {
+        (void) shmoo_vector_free(&(*inp)->part);
         free(*inp);
-        *inp = 0;
-        return 1;
+        *inp = NULL;
     }
+    return 0;
 }
 
 #define ITNAME "input_text"
 int
 _shmoo_input_open_text (
     shmoo_input_t**         inp,
-    shmoo_string_t          text,
-    const shmoo_origin_t*   orig
+    shmoo_string_t          text
     )
 {
-    _input_text_t* in   = 0;
+    _input_text_t* in   = NULL;
+    int            err  = 0;
     shmoo_cursor_t curs = {
         .from = 0,
         .data = 0,
@@ -1154,14 +1162,14 @@ _shmoo_input_open_text (
     };
 
     if (! inp || ! text.data) {
-        return 0;
-    } else if (! (in = calloc(1, (sizeof(*in) + sizeof(TBNAME))))) {
-        return 0;
-    } else if (! shmoo_string_data(&text, 0, &curs.data, &curs.size)) {
+        return EINVAL;
+    } else if (! (in = calloc(1, (sizeof(*in) + sizeof(ITNAME))))) {
+        return errno;
+    } else if ((err = shmoo_string_data(&text, 0, &curs.data, &curs.size))) {
         goto error;
-    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+    } else if ((err = shmoo_vector_init(&in->head.part, &_input_part_vector_type))) {
         goto error;
-    } if (! shmoo_vector_insert_tail(&in->head.part, &curs)) {
+    } else if ((err = shmoo_vector_insert_tail(&in->head.part, &curs))) {
         goto error;
     }
     in->head.type = &_input_text_type;
@@ -1169,56 +1177,58 @@ _shmoo_input_open_text (
     in->head.name = (const uint8_t*) &in[1];
     (void) memcpy(&in[1], ITNAME, sizeof(ITNAME));
     in->head.mtim = time(0);
-    in->head.orig = orig;
     *inp = &in->head;
-    return 1;
+    return 0;
     
 error:
     shmoo_vector_free(&in->head.part);
     free(in);
-    return 0;
+    return err;
 }
 
 #define IBNAME "input_buff"
 int
 _shmoo_input_open_buff (
     shmoo_input_t**         inp,
-    const shmoo_buffer_t*   buff,
-    const shmoo_origin_t*   orig
+    const shmoo_buffer_t*   buff
     )
 {
-    _input_buff_t* in   = 0;
-    shmoo_cursor_t curs = {
-        .from = 0,
-        .data = 0,
-        .size = 0,
-    };
+    _input_buff_t* in   = NULL;
+    int            err  = 0;
+    uint8_t*       data = NULL;
+    size_t         left = 0;
 
     if (! inp || ! buff) {
-        return 0;
+        return EINVAL;
     } else if (! (in = calloc(1, (sizeof(*in) + sizeof(IBNAME))))) {
-        return 0;
-    } else if (! shmoo_buffer_data(buff, 0, &curs.data, &curs.size)) {
+        return errno;
+    } else if ((err = shmoo_buffer_data(buff, 0, &data, &left))) {
         goto error;
-    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+    } else if ((err = shmoo_vector_init(&in->head.part, &_input_part_vector_type))) {
         goto error;
-    } else if (! shmoo_vector_insert_tail(&in->head.part, &curs)) {
-        goto error;
+    } else {
+        shmoo_cursor_t curs = {
+            .from = 0,
+            .data = data,
+            .size = left,
+        };
+        if ((err = shmoo_vector_insert_tail(&in->head.part, &curs))) {
+            goto error;
+        }
     }
 
     in->head.type = &_input_buff_type;
-    in->head.size = curs.size;
+    in->head.size = left;
     in->head.name = (const uint8_t*) &in[1];
     (void) memcpy(&in[1], IBNAME, sizeof(IBNAME));
     in->head.mtim = time(0);
-    in->head.orig = orig;
     *inp = &in->head;
-    return 1;
+    return 0;
 
 error:
     shmoo_vector_free(&in->head.part);
     free(in);
-    return 0;
+    return err;
 }
 
 

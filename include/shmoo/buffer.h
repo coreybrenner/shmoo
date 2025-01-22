@@ -77,7 +77,7 @@ struct _shmoo_buffer {
 extern int shmoo_buffer_make (
     shmoo_buffer_t**            __bufp,
     const shmoo_buffer_type_t*  __type,
-    uint8_t*                    __data,
+    uint8_t**                   __data,
     size_t                      __size
 );
 
@@ -85,7 +85,7 @@ extern int shmoo_buffer_init (
     shmoo_buffer_t*             __buf,
     const shmoo_buffer_type_t*  __type,
     uint8_t*                    __data,
-    size_t                      __size,
+    size_t                      __size
 );
 
 extern int shmoo_buffer_free (
@@ -99,7 +99,8 @@ extern int shmoo_buffer_dest (
 extern int shmoo_buffer_data (
     const shmoo_buffer_t*       __buf,
     size_t                      __offset,
-    shmoo_cursor_t*             __curp
+    uint8_t**                   __data,
+    size_t*                     __leftp
 );
 
 extern int shmoo_buffer_size (

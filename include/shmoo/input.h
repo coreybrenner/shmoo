@@ -39,25 +39,29 @@ typedef     struct _shmoo_input      shmoo_input_t;
 
 #include <shmoo/scan.h>
 #include <shmoo/handle.h>
-#include <shmoo/origin.h>
 #include <shmoo/vector.h>
 #include <shmoo/cursor.h>
 #include <shmoo/string.h>
+#include <shmoo/token.h>
+
+typedef int (*shmoo_input_more_f) (shmoo_input_t*);
+typedef int (*shmoo_input_shut_f) (shmoo_input_t*);
+typedef int (*shmoo_input_dest_f) (shmoo_input_t**);
 
 struct _shmoo_input_type {
-    const char*         name;
-    int               (*dest) (shmoo_input_t**);
-    uint64_t          (*more) (shmoo_input_t*);
-    int               (*shut) (shmoo_input_t*);
+    const char*                 type_name;
+    shmoo_input_more_f          more;
+    shmoo_input_shut_f          shut;
+    shmoo_input_dest_f          dest;
 };
 
 struct _shmoo_input {
-    const shmoo_input_type_t*       type;
-    const uint8_t*                  name;
-    uint64_t                        size;
-    int64_t                         mtim;
-    size_t                          refs;
-    shmoo_vector_t                  part;
+    const shmoo_input_type_t*   type;
+    const uint8_t*              name;
+    uint64_t                    size;
+    int64_t                     mtim;
+    size_t                      refs;
+    shmoo_vector_t              part;
 };
 
 extern const shmoo_vector_type_t shmoo_input_vector_type;
@@ -84,7 +88,12 @@ extern int shmoo_input_open_text (
 
 extern int shmoo_input_open_buff (
     shmoo_input_t**                 __inp,
-    shmoo_buffer_t*                 __buff
+    const shmoo_buffer_t*           __buff
+);
+
+extern int shmoo_input_open_toke (
+    shmoo_input_t**                 __inp,
+    const shmoo_token_t*            __toke
 );
 
 extern int shmoo_input_data (
@@ -94,11 +103,12 @@ extern int shmoo_input_data (
     size_t*                         __leftp
 );
 
-extern uint64_t shmoo_input_copy (
+extern int shmoo_input_copy (
     shmoo_input_t*                  __in,
     uint64_t                        __offset,
     size_t                          __length,
-    uint8_t*                        __dest
+    uint8_t*                        __dest,
+    uint64_t*                       __usedp
 );
 
 extern int shmoo_input_init (
@@ -118,12 +128,13 @@ inline int shmoo_input_shut (shmoo_input_t* in) {
     return (! (in && in->type) ? 0 : in->type->more(in));
 }
 
-inline int shmoo_input_size (shmoo_input_t* in, size_t* sizep) {
+//#error HEY HERE WE ARE
+inline int shmoo_input_size (const shmoo_input_t* in, uint64_t* sizep) {
     return (! (in && sizep) ? 0 : ((*sizep = in->size), 1));
 }
 
 inline int shmoo_input_type (const shmoo_input_t* in, const char** typep) {
-    return (! (in && typep) ? 0 : ((*typep = in->type->name), 1));
+    return (! (in && typep) ? 0 : ((*typep = in->type->type_name), 1));
 }
 
 inline int shmoo_input_refs (const shmoo_input_t* in, size_t* refsp) {
@@ -150,7 +161,7 @@ extern int shmoo_input_scan (
      *   scan_state:
      *      Pointer to A buffer which can hold the current state
      *      of the scan in progress.  This buffer is managed by
-     *      the function at scan_func.
+     *      scan_func.
      *   scan_result:
      *      Pointer to a shmoo_cursor which will, on success,
      *      contain the offset of the beginning of the match,
@@ -158,10 +169,10 @@ extern int shmoo_input_scan (
      *      of the relevant data.
      *
      * RETURNS:
-     *  =0: Failed to match the expected sequence.  Look for
+     *  >0: Failed to match the expected sequence.  Look for
      *      information in the scan state buffer and in the
      *      data at scan_result->size.
-     *  >0: Successfully matched the expected sequence,  This
+     *  =0: Successfully matched the expected sequence,  This
      *      is the return value from the last call to scan_func.
      */
     shmoo_input_t*                  __in,

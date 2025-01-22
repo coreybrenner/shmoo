@@ -37,14 +37,15 @@ typedef     struct _shmoo_token      shmoo_token_t;
 
 #include <shmoo/state.h>
 #include <shmoo/vector.h>
+#include <shmoo/context.h>
 
 typedef int (*shmoo_token_dest_f) (shmoo_token_t**);
 typedef int (*shmoo_token_eval_f) (const shmoo_token_t*, shmoo_context_t*);
 
 struct _shmoo_token_type {
-    const char*                 name;
-    const shmoo_token_dest_f    dest;
-    const shmoo_token_eval_f    eval;
+    const char*                 type_name;
+    shmoo_token_dest_f          dest;
+    shmoo_token_eval_f          eval;
 };
 
 struct _shmoo_token {
@@ -67,7 +68,7 @@ extern int shmoo_token_init (
 );
 
 extern int shmoo_token_free (
-    shmoo_token_t*              __toke,
+    shmoo_token_t*              __toke
 );
 
 extern int shmoo_token_make (
@@ -76,43 +77,37 @@ extern int shmoo_token_make (
     const shmoo_state_t*        __inst
 );
 
-/*
-extern int shmoo_token_dest (
-    shmoo_token_t**             __tokep
-);
-*/
-
 inline int shmoo_token_dest (shmoo_token_t** tokep) {
-    return (! tokep ? 0 : (! *tokep ? 1 : (*tokep)->type->dest(tokep)));
+    return (! tokep ? EINVAL : (! *tokep ? 0 : (*tokep)->type->dest(tokep)));
 }
 
 extern int shmoo_token_type (const shmoo_token_t* toke, const shmoo_token_type_t** typep) {
-    return (! (toke && typep) ? 0 : ((*typep = toke->type), 1));
+    return (! (toke && typep) ? EINVAL : ((*typep = toke->type), 0));
 }
 
-extern int shmoo_token_inst (const shmoo_token_t* toke, const shmoo_input_t** instp) {
-    return (! (toke && instp) ? 0 : ((*instp = toke->inst), 1));
+extern int shmoo_token_inst (const shmoo_token_t* toke, const shmoo_state_t** statep) {
+    return (! (toke && statep) ? EINVAL : ((*statep = toke->inst), 0));
 }
 
 inline int shmoo_token_from (const shmoo_token_t* toke, uint64_t* fromp) {
-    return (! (toke && fromp) ? 0 : ((*fromp = toke->from), 1));
+    return (! (toke && fromp) ? EINVAL : ((*fromp = toke->from), 0));
 }
 
 inline int shmoo_token_size (const shmoo_token_t* toke, size_t* sizep) {
-    return (! (toke && sizep) ? 0 : ((*sizep = toke->size), 1));
+    return (! (toke && sizep) ? EINVAL : ((*sizep = toke->size), 0));
 }
 
 inline int shmoo_token_span (const shmoo_token_t* toke, size_t* spanp) {
-    return (! (toke && spanp) ? 0 : ((*spanp = toke->span), 1));
+    return (! (toke && spanp) ? EINVAL : ((*spanp = toke->span), 0));
 }
 
 inline int shmoo_token_more (shmoo_token_t* toke, size_t size, size_t span) {
-    return (! toke ? 0 : (
+    return (! toke ? EINVAL : (
             toke->last_size += size,
             toke->last_span += span,
             toke->size      += size,
             toke->span      += span,
-            1
+            0
            ));
 }
 

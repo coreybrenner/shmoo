@@ -22,6 +22,9 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #include <string.h>         /* strchr */
+#include <stddef.h>
+
+#include <shmoo/char.h>
 
 #include <shmoo/char.h>
 #include <shmoo/scan.h>
@@ -61,14 +64,17 @@ shmoo_char_scan_utf8 (
     )
 {
     shmoo_char_scan_utf8_state_t* state = (shmoo_char_scan_utf8_state_t*) _state;
-    size_t                        used  = 0;
-    size_t                        left  = 0;
-    size_t                        want  = 0;
-    const uint8_t*                next  = 0;
-    uint8_t                       byte  = 0;
-    shmoo_char_t                  cerr  = 0;
-    shmoo_char_t                  cval  = 0;
-    size_t                        csiz  = 0;
+    size_t         used  = 0;
+    size_t         left  = 0;
+    size_t         want  = 0;
+    const uint8_t* next  = 0;
+    uint8_t        byte  = 0;
+    shmoo_char_t   cerr  = 0;
+    shmoo_char_t   cval  = 0;
+    size_t         csiz  = 0;
+    size_t         nshl  = 0;
+    uint32_t       errs  = 0;
+    int            rslt  = 0;
 
     if (! (state && cursor && usedp)) {
         /* Error. */
@@ -79,28 +85,30 @@ shmoo_char_scan_utf8 (
          * Return -1 to signify this buffer ended before
          * a whole character could be scanned.
          */
-        return -(*usedp = scan->used);
+        return -(*usedp = state->used);
     }
 
     left = cursor->size;
     next = cursor->data;
-    switch (scan->used) {
-        case 3: /*FALLTHRU*/
-            byte  = scan->data.byte[++used];
+    switch (state->used) {
+        case 3:
+            byte  = state->data.byte[++used];
             cval  = ((cval << 6) | (byte & 0x3F));
             cerr  = ((cerr << 6) | (byte & 0xC0));
             nshl += 6;
-        case 2: /*FALLTHRU*/
-            byte  = scan->data.byte[++used];
+            /*FALLTHRU*/
+        case 2:
+            byte  = state->data.byte[++used];
             cval  = ((cval << 6) | (byte & 0x3F));
             cerr  = ((cerr << 6) | (byte & 0xC0));
             nshl += 6;
-        case 1: /*FALLTHRU*/
-            byte  = scan->data.byte[0];
+            /*FALLTHRU*/
+        case 1:
+            byte  = state->data.byte[0];
             used += 1;
             break;
         case 0: 
-            byte = scan->data.byte[0] = *cursor->data;
+            byte = state->data.byte[0] = *cursor->data;
             break;
     }
 
@@ -146,9 +154,9 @@ shmoo_char_scan_utf8 (
                 used += 1;
                 next += 1;
             }
-            scan->cval = SHMOO_CHAR_INVALID;
-            scan->used = used;
-            *sizep     = used;
+            state->cval = SHMOO_CHAR_INVALID;
+            state->used = used;
+            *usedp      = used;
             return 0;
         }
     }
@@ -159,23 +167,29 @@ shmoo_char_scan_utf8 (
             byte = *next++;
             cval = ((cval << 6) | (byte & 0x3F));
             cerr = ((cerr << 6) | (byte & 0xC0));
-            scan->data.byte[used++] = byte;
-        case 2: /*FALLTHRU*/
+            state->data.byte[used++] = byte;
+            /*FALLTHRU*/
+        case 2:
             byte = *next++;
             cval = ((cval << 6) | (byte & 0x3F));
             cerr = ((cerr << 6) | (byte & 0xC0));
-            scan->data.byte[used++] = byte;
-        case 1: /*FALLTHRU*/
+            state->data.byte[used++] = byte;
+            /*FALLTHRU*/
+        case 1:
             byte = *next++;
             cval = ((cval << 6) | (byte & 0x3F));
             cerr = ((cerr << 6) | (byte & 0xC0));
-            scan->data.byte[used++] = byte;
-        case 0: /*FALLTHRU*/
+            state->data.byte[used++] = byte;
+            /*FALLTHRU*/
+        case 0:
             switch (csiz) {
-                case 4:              errs += ((cerr & 0x00C00000) != 0x00800000);
-                case 3: /*FALLTHRU*/ errs += ((cerr & 0x0000C000) != 0x00008000);
-                case 2: /*FALLTHRU*/ errs += ((cerr & 0x000000C0) != 0x00000080);
-                case 1: /*FALLTHRU*/ break;
+                case 4: errs += ((cerr & 0x00C00000) != 0x00800000);
+                    /*FALLTHRU*/
+                case 3: errs += ((cerr & 0x0000C000) != 0x00008000);
+                    /*FALLTHRU*/
+                case 2: errs += ((cerr & 0x000000C0) != 0x00000080);
+                    /*FALLTHRU*/
+                case 1: break;
             }
             if (errs) {
                 cval = SHMOO_CHAR_INVALID;
@@ -185,9 +199,9 @@ shmoo_char_scan_utf8 (
             }
     }
 
-    scan->cval = cval;
-    scan->used = used;
-    *sizep     = used;
+    state->cval = cval;
+    state->used = used;
+    *usedp      = used;
     return rslt;
 
     { shmoo_scan_f __apicheck__ = shmoo_char_scan_ascii; (void) __apicheck__; }

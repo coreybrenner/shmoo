@@ -36,7 +36,7 @@ typedef     struct _shmoo_context_type shmoo_context_type_t;
 typedef     struct _shmoo_context      shmoo_context_t;
 
 struct _shmoo_context_type {
-    const char*                 name;
+    const char*                 type_name;
 };
 
 struct _shmoo_context {
