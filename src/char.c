@@ -21,22 +21,175 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#include <shmoo/char.h>
+#include <string.h>         /* strchr */
 
+#include <shmoo/char.h>
+#include <shmoo/scan.h>
+#include <shmoo/cursor.h>
+
+/* shmoo_scan_f API */
 int
 shmoo_char_scan_ascii (
-    const uint8_t*                  data,
-    size_t                          left,
-    shmoo_char_t*                   charp,
-    size_t*                         sizep
+    void*                   _state,
+    const shmoo_cursor_t*   cursor,
+    size_t*                 sizep
     )
 {
-    if (! data || ! left || ! charp || ! sizep) {
-        return 0;
+    shmoo_char_scan_ascii_state_t* state = (shmoo_char_scan_ascii_state_t*) _state;
+
+    if (! (state && cursor && sizep)) {
+        return  0;
+    } else if (! cursor->size) {
+        state->cval = SHMOO_CHAR_INVALID;
+        *sizep      = 0;
+        return -1;
     } else {
-        *charp = *data;
-        *sizep = sizeof(uint8_t);
-        return 1;
+        state->cval = (shmoo_char_t) *cursor->data;
+        *sizep      = sizeof(*cursor->data);
+        return  1;
     }
+
+    { shmoo_scan_f __apicheck__ = shmoo_char_scan_ascii; (void) __apicheck__; }
+}
+
+/* shmoo_scan_f API */
+int
+shmoo_char_scan_utf8 (
+    void*                   _state,
+    const shmoo_cursor_t*   cursor,
+    size_t*                 usedp
+    )
+{
+    shmoo_char_scan_utf8_state_t* state = (shmoo_char_scan_utf8_state_t*) _state;
+    size_t                        used  = 0;
+    size_t                        left  = 0;
+    size_t                        want  = 0;
+    const uint8_t*                next  = 0;
+    uint8_t                       byte  = 0;
+    shmoo_char_t                  cerr  = 0;
+    shmoo_char_t                  cval  = 0;
+    size_t                        csiz  = 0;
+
+    if (! (state && cursor && usedp)) {
+        /* Error. */
+        return 0;
+    } else if (! cursor->size) {
+        /* No bytes left in buffer; give back number
+         * of bytes already read for this character,
+         * Return -1 to signify this buffer ended before
+         * a whole character could be scanned.
+         */
+        return -(*usedp = scan->used);
+    }
+
+    left = cursor->size;
+    next = cursor->data;
+    switch (scan->used) {
+        case 3: /*FALLTHRU*/
+            byte  = scan->data.byte[++used];
+            cval  = ((cval << 6) | (byte & 0x3F));
+            cerr  = ((cerr << 6) | (byte & 0xC0));
+            nshl += 6;
+        case 2: /*FALLTHRU*/
+            byte  = scan->data.byte[++used];
+            cval  = ((cval << 6) | (byte & 0x3F));
+            cerr  = ((cerr << 6) | (byte & 0xC0));
+            nshl += 6;
+        case 1: /*FALLTHRU*/
+            byte  = scan->data.byte[0];
+            used += 1;
+            break;
+        case 0: 
+            byte = scan->data.byte[0] = *cursor->data;
+            break;
+    }
+
+    switch (byte & 0xF8) {
+        case 0xF0:  /* 1111 0 */    /* ---- -xxx */
+            cval |= (((shmoo_char_t) (byte & 0x07)) << nshl);
+            csiz  = 4;
+            break;
+        case 0xE0:  /* 1110 x */    /* ---- xxxx */
+        case 0xE8:  /* 1110 x */    /* ---- xxxx */
+            cval |= (((shmoo_char_t) (byte & 0x0F)) << nshl);
+            csiz  = 3;
+            break;
+        case 0xC0:  /* 110x x */    /* ---x xxxx */
+        case 0xC8:  /* 110x x */    /* ---x xxxx */
+        case 0xD0:  /* 110x x */    /* ---x xxxx */
+        case 0xD8:  /* 110x x */    /* ---x xxxx */
+            cval |= (((shmoo_char_t) (byte & 0x1F)) << nshl);
+            csiz  = 2;
+            break;
+        default:    /* 0xxx x */    /* -xxx xxxx */
+            cval  = byte;
+            csiz  = 1;
+            break;
+
+        /* Invalid starting sequences. */
+        case 0x80:  /* 10xx x */    /* --xx xxxx */
+        case 0x88:  /* 10xx x */    /* --xx xxxx */
+        case 0x90:  /* 10xx x */    /* --xx xxxx */
+        case 0x98:  /* 10xx x */    /* --xx xxxx */
+        case 0xA0:  /* 10xx x */    /* --xx xxxx */
+        case 0xA8:  /* 10xx x */    /* --xx xxxx */
+        case 0xB0:  /* 10xx x */    /* --xx xxxx */
+        case 0xB8:  /* 10xx x */    /* --xx xxxx */ {
+            /* Scan ahead until we encounter a valid starting character.
+             * Return the number of invalid bytes in the sequence.
+             */
+            while (left) {
+                if ((*next & 0xC0) != 0x80) {
+                    break;
+                }
+                left -= 1;
+                used += 1;
+                next += 1;
+            }
+            scan->cval = SHMOO_CHAR_INVALID;
+            scan->used = used;
+            *sizep     = used;
+            return 0;
+        }
+    }
+
+    want = (csiz - used);
+    switch ((want < left) ? want : left) {
+        case 3:
+            byte = *next++;
+            cval = ((cval << 6) | (byte & 0x3F));
+            cerr = ((cerr << 6) | (byte & 0xC0));
+            scan->data.byte[used++] = byte;
+        case 2: /*FALLTHRU*/
+            byte = *next++;
+            cval = ((cval << 6) | (byte & 0x3F));
+            cerr = ((cerr << 6) | (byte & 0xC0));
+            scan->data.byte[used++] = byte;
+        case 1: /*FALLTHRU*/
+            byte = *next++;
+            cval = ((cval << 6) | (byte & 0x3F));
+            cerr = ((cerr << 6) | (byte & 0xC0));
+            scan->data.byte[used++] = byte;
+        case 0: /*FALLTHRU*/
+            switch (csiz) {
+                case 4:              errs += ((cerr & 0x00C00000) != 0x00800000);
+                case 3: /*FALLTHRU*/ errs += ((cerr & 0x0000C000) != 0x00008000);
+                case 2: /*FALLTHRU*/ errs += ((cerr & 0x000000C0) != 0x00000080);
+                case 1: /*FALLTHRU*/ break;
+            }
+            if (errs) {
+                cval = SHMOO_CHAR_INVALID;
+                rslt = 0;
+            } else {
+                rslt = used;
+            }
+    }
+
+    scan->cval = cval;
+    scan->used = used;
+    *sizep     = used;
+    return rslt;
+
+    { shmoo_scan_f __apicheck__ = shmoo_char_scan_ascii; (void) __apicheck__; }
 }
 

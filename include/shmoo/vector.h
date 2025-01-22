@@ -25,6 +25,7 @@
 #define _shmoo_vector_h
 
 #include <stdint.h>
+#include <string.h>     /* memcpy */
 
 #include <shmoo/compile.h>
 
@@ -42,18 +43,66 @@ struct _shmoo_vector_type {
 
 struct _shmoo_vector {
     const shmoo_vector_type_t*  type;
-    uint32_t                    size;
-    uint32_t                    used;
+    size_t                      size;
+    size_t                      used;
     void*                       data;
 };
 
 extern int      shmoo_vector_init (shmoo_vector_t*, const shmoo_vector_type_t*);
 extern int      shmoo_vector_free (shmoo_vector_t*);
+/*
 extern int      shmoo_vector_used (const shmoo_vector_t*, uint32_t*);
+*/
+inline int shmoo_vector_used (const shmoo_vector_t* vec, size_t* usedp) {
+    return (! (vec && usedp) ? 0 : ((*usedp = vec->used), 1));
+}
+
+inline int shmoo_vector_size (const shmoo_vector_t* vec, size_t* sizep) {
+    return (! (vec && sizep) ? 0 : ((*sizep = vec->size), 1));
+}
+
+inline int shmoo_vector_type (const shmoo_vector_t* vec, const char** typep) {
+    return (! (vec && typep) ? 0 : ((*typep = vec->type->name), 1));
+}
+
+/*
 extern int      shmoo_vector_peek (const shmoo_vector_t*, uint32_t, void*);
 extern void*    shmoo_vector_tail (const shmoo_vector_t*);
+*/
+inline int shmoo_vector_peek (const shmoo_vector_t* vec, size_t indx, void* outp) {
+    return (! (vec && outp && (indx >= vec->used)) ? 0 : (
+            (memcpy(outp,
+                    ((uint8_t*) vec->data + (indx * vec->type->elem)),
+                    vec->type->elem
+                   ),
+             1
+            )
+           );
+}
+
+inline void* shmoo_vector_tail (const shmoo_vector_t* vec) {
+    return (! (vec && vec->used) ? 0 : (
+            ((uint8_t*) vec->data + (vec->type->elem * (vec->used - 1)))
+           );
+}
+
+extern int      shmoo_vector_insert_head (shmoo_vector_t*, const void*);
 extern int      shmoo_vector_insert_tail (shmoo_vector_t*, const void*);
+/*
 extern int      shmoo_vector_remove_tail (shmoo_vector_t*, void*);
+*/
+inline int shmoo_vector_remove_tail (shmoo_vector_t* vec, void* outp) {
+    return (! (vec && vec->used && outp) ? 0 : (
+            (memcpy(outp,
+                    ((uint8_t*) vec->data + (vec->type->elem * --vec->used)), 
+                    vec->data->elem
+                   ),
+             memset(((uint8_t*) vec->data + (vec->type->elem * vec->used)),
+                    0, vec->type->elem),
+             1
+            )
+           );
+}
 
 __CDECL_END
 

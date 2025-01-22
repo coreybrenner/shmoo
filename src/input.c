@@ -36,10 +36,11 @@
 #include <sys/types.h>      /* size_t, socklen_t, ... */
 #include <sys/un.h>         /* sockaddr_un */
 
-#include <shmoo/cursor.h>
+#include <shmoo/cursor.h>   /* shmoo_cursor_t */
 #include <shmoo/handle.h>   /* shmoo_handle_t */
 #include <shmoo/input.h>    /* shmoo_input_t */
 #include <shmoo/vector.h>   /* shmoo_vector_t */
+#include <shmoo/buffer.h>   /* shmoo_buffer_t */
 
 /*forward*/ struct _input_file;
 typedef     struct _input_file _input_file_t;
@@ -53,6 +54,8 @@ typedef     struct _input_sock _input_sock_t;
 typedef     struct _input_unix _input_unix_t;
 /*forward*/ struct _input_text;
 typedef     struct _input_text _input_text_t;
+/*forward*/ struct _input_buff;
+typedef     struct _input_buff _input_buff_t;
 
 struct _input_file {
     shmoo_input_t                   head;
@@ -92,8 +95,14 @@ struct _input_unix {
 struct _input_text {
     shmoo_input_t                   head;
     /* ------------------------------- */
-    const shmoo_origin_t*           orig;
 };
+
+struct _input_buff {
+    shmoo_input_t                   head;
+    /* ------------------------------- */
+    const shmoo_buffer_t*           buff;
+};
+    
 
 #if 0
 struct _shmoo_input_ipv4 {
@@ -122,35 +131,44 @@ struct _shmoo_input_ipv6 {
 #endif
 
 static int      _input_mmap_dest (shmoo_input_t**);
-static uint64_t _input_mmap_more (shmoo_input_t*, uint64_t);
+static uint64_t _input_mmap_more (shmoo_input_t*);
 static int      _input_mmap_shut (shmoo_input_t*);
 
-const shmoo_input_type_t _input_mmap_type = {
+static const shmoo_input_type_t _input_mmap_type = {
     .name = "input_mmap",
     .dest = _input_mmap_dest,
     .more = _input_mmap_more,
     .shut = _input_mmap_shut,
 };
 
-const shmoo_input_type_t _input_text_type = {
+static int      _input_text_dest (shmoo_input_t**);
+
+static const shmoo_input_type_t _input_text_type = {
     .name = "input_text",
-    .dest = _input_mmap_dest,
+    .dest = _input_text_dest,
+    .more = _input_mmap_more,
+    .shut = _input_mmap_shut,
+};
+
+static const shmoo_input_type_t _input_buff_type = {
+    .name = "input_buff",
+    .dest = _input_text_dest,
     .more = _input_mmap_more,
     .shut = _input_mmap_shut,
 };
 
 static int      _input_pipe_dest (shmoo_input_t**);
-static uint64_t _input_pipe_more (shmoo_input_t*, uint64_t);
+static uint64_t _input_pipe_more (shmoo_input_t*);
 static int      _input_pipe_shut (shmoo_input_t*);
 
-const shmoo_input_type_t _input_pipe_type = {
+static const shmoo_input_type_t _input_pipe_type = {
     .name = "input_pipe",
     .dest = _input_pipe_dest,
     .more = _input_pipe_more,
     .shut = _input_pipe_shut,
 };
 
-const shmoo_input_type_t _input_unix_type = {
+static const shmoo_input_type_t _input_unix_type = {
     .name = "input_unix",
     .dest = _input_pipe_dest,
     .more = _input_pipe_more,
@@ -158,10 +176,10 @@ const shmoo_input_type_t _input_unix_type = {
 };
 
 static int      _input_file_dest (shmoo_input_t**);
-static uint64_t _input_file_more (shmoo_input_t*, uint64_t);
+static uint64_t _input_file_more (shmoo_input_t*);
 static int      _input_file_shut (shmoo_input_t*);
 
-const shmoo_input_type_t _input_file_type = {
+static const shmoo_input_type_t _input_file_type = {
     .name = "input_file",
     .dest = _input_file_dest,
     .more = _input_file_more,
@@ -173,19 +191,72 @@ static const shmoo_vector_type_t _input_part_vector_type = {
     .elem = sizeof(shmoo_cursor_t),
 };
 
-static int _input_mmap_open_path (shmoo_input_t**, shmoo_string_t, const struct stat*);
-static int _input_mmap_open_desc (shmoo_input_t**, shmoo_handle_t, const struct stat*);
-static int _input_pipe_open_path (shmoo_input_t**, shmoo_string_t, const struct stat*);
-static int _input_pipe_open_desc (shmoo_input_t**, shmoo_handle_t, const struct stat*);
-static int _input_sock_open_desc (shmoo_input_t**, shmoo_handle_t, const struct stat*);
-static int _input_unix_open_path (shmoo_input_t**, shmoo_string_t, const struct stat*);
-static int _input_unix_open_desc (shmoo_input_t**, shmoo_handle_t, const struct stat*);
+static int _input_mmap_open_path (
+    shmoo_input_t**,
+    shmoo_string_t,
+    const shmoo_origin_t*,
+    const struct stat*
+);
+static int _input_mmap_open_desc (
+    shmoo_input_t**,
+    shmoo_handle_t,
+    const shmoo_origin_t*,
+    const struct stat*
+);
+static int _input_pipe_open_path (
+    shmoo_input_t**,
+    shmoo_string_t,
+    const shmoo_origin_t*,
+    const struct stat*
+);
+static int _input_pipe_open_desc (
+    shmoo_input_t**,
+    shmoo_handle_t,
+    const shmoo_origin_t*,
+    const struct stat*
+);
+static int _input_sock_open_desc (
+    shmoo_input_t**,
+    shmoo_handle_t,
+    const shmoo_origin_t*,
+    const struct stat*
+);
+static int _input_unix_open_path (
+    shmoo_input_t**,
+    shmoo_string_t,
+    const shmoo_origin_t*,
+    const struct stat*
+);
+static int _input_unix_open_desc (
+    shmoo_input_t**,
+    shmoo_handle_t,
+    const shmoo_origin_t*,
+    const struct stat*
+);
+static int _input_more_trim (
+    shmoo_input_t*
+);
+static size_t _input_more_grow (
+    shmoo_input_t*
+);
+
+/* public data */
+
+const shmoo_vector_type_t shmoo_input_vector_type = {
+    .name = "input_vector",
+    .elem = sizeof(shmoo_input_t*),
+};
 
 /* public functions */
 
 #define FPNAME "stdio_file: %d"
 int
-shmoo_input_open_file (shmoo_input_t** inp, FILE* file) {
+shmoo_input_open_file (
+    shmoo_input_t**         inp,
+    FILE*                   file,
+    const shmoo_origin_t*   orig
+    )
+{
     shmoo_handle_t  desc = fileno(file);
     _input_file_t*  in   = 0;
     size_t          size = (sizeof(*in) + snprintf(0, 0, FPNAME, desc));
@@ -196,77 +267,92 @@ shmoo_input_open_file (shmoo_input_t** inp, FILE* file) {
         return 0;
     } else if (! (in = calloc(1, size))) {
         return 0;
+    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+        goto error;
     }
 
     in->head.type = &_input_file_type;
     in->head.name = (const uint8_t*) &in[1];
-    in->head.mtim = time(0);
     snprintf((char*) &in[1], (size - sizeof(*in)), FPNAME, desc);
-    in->file = file;
+    in->head.mtim = time(0);
+    in->head.orig = orig;
+    in->file      = file;
     return 1;
+
+error:
+    free(in);
+    return 0;
 }
 
 int
-shmoo_input_open_path (shmoo_input_t** inp, shmoo_string_t path) {
+shmoo_input_open_path (
+    shmoo_input_t**         inp,
+    shmoo_string_t          path,
+    const shmoo_origin_t*   orig
+    )
+{
     struct stat info;
-    char*       buff = alloca(path.size + 1);
+    char*       buff;
 
-    if (! inp || ! buff) {
+    if (! inp || ! path.text || ! path.size) {
+        return 0;
+    } else if (! buff = alloca(path.size + 1)) {
         return 0;
     }
-    memcpy(buff, path.data, path.size);
+    (void) memcpy(buff, path.data, path.size);
     buff[path.size] = '\0';
 
     if (-1 == stat(buff, &info)) {
         return 0;
     } else if (S_ISREG(info.st_mode)) {
-        return (_input_mmap_open_path(inp, path, &info)
-             || _input_pipe_open_path(inp, path, &info)
+        return (_input_mmap_open_path(inp, path, orig, &info)
+             || _input_pipe_open_path(inp, path, orig, &info)
                );
     } else if (S_ISSOCK(info.st_mode)) {
-        return _input_unix_open_path(inp, path, &info);
+        return _input_unix_open_path(inp, path, orig, &info);
     } else if (S_ISFIFO(info.st_mode)) {
-        return _input_pipe_open_path(inp, path, &info);
+        return _input_pipe_open_path(inp, path, orig, &info);
     } else {
         return 0;
     }
 }
 
 int
-shmoo_input_open_desc (shmoo_input_t** inp, shmoo_handle_t desc) {
+shmoo_input_open_desc (
+    shmoo_input_t**         inp,
+    shmoo_handle_t          desc,
+    const shmoo_origin_t*   orig
+    )
+{
     struct stat info;
     
-    if (! inp || (-1 == desc)) {
+    if (! inp || (desc < 0)) {
         return 0;
     } else if (-1 == fstat(desc, &info)) {
         return 0;
     }
 
     if (S_ISREG(info.st_mode)) {
-        return (_input_mmap_open_desc(inp, desc, &info)
-             || _input_pipe_open_desc(inp, desc, &info)
+        return (_input_mmap_open_desc(inp, desc, orig, &info)
+             || _input_pipe_open_desc(inp, desc, orig, &info)
                );
     } else if (S_ISSOCK(info.st_mode)) {
-        return _input_sock_open_desc(inp, desc, &info);
+        return _input_sock_open_desc(inp, desc, orig, &info);
     } else if (S_ISFIFO(info.st_mode)) {
-        return _input_pipe_open_desc(inp, desc, &info);
+        return _input_pipe_open_desc(inp, desc, orig, &info);
     } else {
         return 0;
     }
 }
 
 int
-shmoo_input_dest (shmoo_input_t** inp) {
-    if (! inp) {
-        return 0;
-    } else if (! *inp) {
-        return 1;   /* already freed... */
-    }
-    return (*inp)->type->dest(inp);
-}
-
-int
-_shmoo_input_data (shmoo_input_t* in, uint64_t from, shmoo_cursor_t* datap, ...) {
+shmoo_input_data (
+    shmoo_input_t*          in,
+    uint64_t                from,
+    const uint8_t**         datap,
+    size_t*                 leftp
+    )
+{
     uint32_t       indx;
     uint32_t       high;
     shmoo_cursor_t curs = {
@@ -279,35 +365,14 @@ _shmoo_input_data (shmoo_input_t* in, uint64_t from, shmoo_cursor_t* datap, ...)
         return 0;
     }
 
-    if (from >= in->size) {
-        /* If we are asking for data beyond the bounds of what the
-         * input source currently has, try to read more data and
-         * procure a pointer and amount from the new buffer.
-         */
-        uint64_t want;
-        va_list  args;
-
-        /* Allow a default; if no amount of data is specified,
-         * round up the size of the last data buffer to the
-         * next page boundary so there might be some data
-         * available to copy out.
-         */
-        va_start(args, datap);
-        want = va_arg(args, uint64_t);
-        va_end(args);
-        if (! want) {
-            uint64_t page = sysconf(_SC_PAGE_SIZE);
-            uint64_t mask = (page - 1);
-            want = ((from + page) & ~mask);
-        }
-        /* Try to slurp up more data. */
-        if (! in->type->more(in, want)) {
-            return 0;
+    while (from >= in->size) {
+        if (! in->type->more(in)) {
+            break;
         }
     }
-
-    /* Find out how many slots the data buffer vector has. */
-    if (! shmoo_vector_used(&in->part, &high)) {
+    if (from >= in->size) {
+        return 0;
+    } else if (! shmoo_vector_used(&in->part, &high)) {
         return 0;
     }
     
@@ -323,16 +388,19 @@ _shmoo_input_data (shmoo_input_t* in, uint64_t from, shmoo_cursor_t* datap, ...)
     }
 
     /* All done.  Populate the result. */
-    curs.data += (from - curs.from);
-    curs.size -= (from - curs.from);
-    curs.from  = from;
-    *datap = curs;
-
+    *datap = (curs.data + (from - curs.from));
+    *leftp = (curs.size - (from - curs.from));
     return 1;
 }
 
 uint64_t
-shmoo_input_read (shmoo_input_t* in, uint64_t from, uint64_t want, uint8_t* into) {
+shmoo_input_copy (
+    shmoo_input_t*          in,
+    uint64_t                from,
+    uint64_t                want,
+    uint8_t*                into
+    )
+{
     uint32_t       indx = 0;
     uint32_t       high = 0;
     uint64_t       used = 0;
@@ -370,7 +438,7 @@ shmoo_input_read (shmoo_input_t* in, uint64_t from, uint64_t want, uint8_t* into
      */
     for (used = 0, ++indx; indx < high; ++indx) {
         uint64_t copy = ((curs.size > want) ? want : curs.size);
-        memcpy((into + used), curs.data, copy);
+        (void) memcpy((into + used), curs.data, copy);
         used += copy;
         want -= copy;
         if (0 == want) {
@@ -383,108 +451,52 @@ shmoo_input_read (shmoo_input_t* in, uint64_t from, uint64_t want, uint8_t* into
     return used;
 }
 
-uint64_t
-_shmoo_input_more (shmoo_input_t* in, ...) {
-    uint64_t want;
-    va_list  args;
-
-    va_start(args, in);
-    want = va_arg(args, uint64_t);
-    va_end(args);
-
-    if (! in) {
-        return 0;
-    }
-    if (want == 0) {
-        shmoo_cursor_t* last = 0;
-        long int        page = sysconf(_SC_PAGE_SIZE);
-        if (-1 == page) {
-            return 0;
-        } else if (! (last = shmoo_vector_tail(&in->part))) {
-            return 0;
-        }
-        want = ((last->from + last->size + page) & ~(page - 1));
-    }
-
-    return in->type->more(in, want);
-}
-
-int
-shmoo_input_shut (shmoo_input_t* in) {
-    if (! in) {
-        return 0;
-    } else {
-        return in->type->shut(in);
-    }
-}
-
-int
-shmoo_input_size (const shmoo_input_t* in, uint64_t* sizep) {
-    if (! in || ! sizep) {
-        return 0;
-    } else {
-        *sizep = in->size;
-        return 1;
-    }
-}
-
-int
-shmoo_input_type (const shmoo_input_t* in, const char** typep) {
-    if (! in || ! typep) {
-        return 0;
-    } else {
-        *typep = in->type->name;
-        return 1;
-    }
-}
-
-int
-shmoo_input_orig (const shmoo_input_t* in, const shmoo_origin_t** origp) {
-    if (! in || ! origp) {
-        return 0;
-    } else if (in->type != &_input_text_type) {
-        return 0;
-    } else {
-        *origp = ((const _input_text_t*) in)->orig;
-        return 1;
-    }
-}
-
 /* static functions */
 
 int
-_input_mmap_open_path (shmoo_input_t** inp, shmoo_string_t path, const struct stat* info) {
-    shmoo_cursor_t data = {
-        .data = MAP_FAILED,
-        .size = 0,
-    };
+_input_mmap_open_path (
+    shmoo_input_t**         inp,
+    shmoo_string_t          path,
+    const shmoo_origin_t*   orig,
+    const struct stat*      info
+    )
+{
     _input_mmap_t* in   = 0;
     size_t         size = (sizeof(*in) + path.size + 1);
     int            desc = -1;
+    shmoo_cursor_t curs = {
+        .from = 0,
+        .data = MAP_FAILED,
+        .size = 0,
+    };
 
-    if (! (in = calloc(1, size))) {
-        goto error;
+    if (! inp || ! path.data || ! path.size) {
+        return 0;
+    } else if (! (in = calloc(1, (sizeof(*in) + path.size + 1)))) {
+        return 0;
     }
     in->head.type = &_input_mmap_type;
     in->head.size = info->st_size;
-    in->head.mtim = info->st_mtime;
     in->head.name = (const uint8_t*) &in[1];
-    memcpy(&in[1], path.data, path.size);
+    (void) memcpy(&in[1], path.data, path.size);
+    path.data[path.size] = '\0';
+    in->head.mtim = info->st_mtime;
+    in->head.orig = orig;
 
     desc = open((const char*) in->head.name, O_RDONLY);
     if (-1 == desc) {
         goto error;
     }
-    data.from = 0;
-    data.size = info->st_size;
-    data.data = mmap(0, info->st_size, PROT_READ, MAP_SHARED, desc, 0);
+    curs.from = 0;
+    curs.size = info->st_size;
+    curs.data = mmap(0, info->st_size, PROT_READ, MAP_SHARED, desc, 0);
     if (-1 == close(desc)) {
         goto error;
-    } else if (desc = -1, data.data == MAP_FAILED) {
+    } else if (desc = -1, MAP_FAILED == curs.data) {
         goto error;
     } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
         goto error;
-    } else if (! shmoo_vector_insert_tail(&in->head.part, &data)) {
+    } else if (! shmoo_vector_insert_tail(&in->head.part, &curs)) {
         goto error;
     }
     *inp = &in->head;
@@ -494,8 +506,8 @@ error:
     if (-1 != desc) {
         (void) close(desc);
     }
-    if (data.data != MAP_FAILED) {
-        (void) munmap((void*) data.data, data.size);
+    if (curs.data != MAP_FAILED) {
+        (void) munmap(curs.data, curs.size);
     }
     free(in);
     return 0;
@@ -503,64 +515,85 @@ error:
 
 #define FDNAME "file_descriptor: %d"
 int
-_input_mmap_open_desc (shmoo_input_t** inp, shmoo_handle_t desc, const struct stat* info) {
+_input_mmap_open_desc (
+    shmoo_input_t**         inp,
+    shmoo_handle_t          desc,
+    const shmoo_origin_t*   orig,
+    const struct stat*      info
+    )
+{
     _input_mmap_t* in   = 0;
     size_t         size = (sizeof(*in) + snprintf(0, 0, FDNAME, desc));
-    shmoo_cursor_t data = {
+    shmoo_cursor_t curs;
+
+    if (! inp) {
+        return 0;
+    }
+
+    curs = {
         .from = 0,
         .size = info->st_size,
         .data = mmap(0, info->st_size, PROT_READ, MAP_SHARED, desc, 0),
     };
 
-    if (MAP_FAILED == data.data) {
+    if (MAP_FAILED == curs.data) {
         return 0;
     } else if (! (in = calloc(1, size))) {
         goto error;
     } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
         goto error;
-    } else if (! shmoo_vector_insert_tail(&in->head.part, &data)) {
+    } else if (! shmoo_vector_insert_tail(&in->head.part, &curs)) {
         goto error;
     }
     in->head.type = &_input_mmap_type;
     in->head.size = info->st_size;
-    in->head.mtim = info->st_mtime;
     in->head.name = (const uint8_t*) &in[1];
     snprintf((char*) &in[1], (size - sizeof(*in)), FDNAME, desc);
+    in->head.mtim = info->st_mtime;
+    in->head.orig = orig;
     *inp = &in->head;
     return 1;
 
 error:
-    if (MAP_FAILED != data.data) {
-        (void) munmap((void*) data.data, data.size);
+    if (MAP_FAILED != curs.data) {
+        (void) munmap(curs.data, curs.size);
     }
     free(in);
     return 0;
 }
 
 uint64_t
-_input_mmap_more (shmoo_input_t* in, uint64_t want) {
+_input_mmap_more (
+    shmoo_input_t*          in
+    )
+{
     return 0;
     (void) in;
-    (void) want;
 }
 
 int
-_input_mmap_shut (shmoo_input_t* in) {
-    return 1;
-    (void) in;
+_input_mmap_shut (
+    shmoo_input_t*          in
+    )
+{
+    return (in ? 1 : 0);
 }
 
 int
-_input_mmap_dest (shmoo_input_t** inp) {
+_input_mmap_dest (
+    shmoo_input_t**         inp
+    )
+{
     shmoo_string_t data;
     _input_mmap_t* in = 0;
 
     if (! inp) {
         return 0;
-    } else if (! (in = *((_input_mmap_t**) inp))) {
-        return 0;
+    } else if (! *inp) {
+        return 1;
     }
 
+    in = (_input_mmap_t*) *inp;
     while (shmoo_vector_remove_tail(&in->head.part, &data)) {
         (void) munmap((void*) data.data, data.size);
     }
@@ -572,20 +605,30 @@ _input_mmap_dest (shmoo_input_t** inp) {
 }
 
 int
-_input_pipe_open_path (shmoo_input_t** inp, shmoo_string_t path, const struct stat* info) {
+_input_pipe_open_path (
+    shmoo_input_t**         inp,
+    shmoo_string_t          path,
+    const shmoo_origin_t*   orig,
+    const struct stat*      info
+    )
+{
     _input_pipe_t* in   = 0;
     size_t         size = (sizeof(*in) + path.size + 1);
     shmoo_handle_t desc = -1;
 
-    if (! (in = calloc(1, size))) {
+    if (! inp) {
+        return 0;
+    } else if (! (in = calloc(1, size))) {
         return 0;
     } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
         goto error;
     }
     in->head.type = &_input_pipe_type;
-    in->head.mtim = time(0);
+    in->head.size = 0;
     in->head.name = (const uint8_t*) &in[1];
     memcpy(&in[1], path.data, path.size);
+    in->head.mtim = time(0);
+    in->head.orig = orig;
 
     desc = open((const char*) in->head.name, O_RDONLY);
     if (-1 == desc) {
@@ -606,20 +649,30 @@ error:
 }
 
 int
-_input_pipe_open_desc (shmoo_input_t** inp, shmoo_handle_t desc, const struct stat* info) {
+_input_pipe_open_desc (
+    shmoo_input_t**         inp,
+    shmoo_handle_t          desc,
+    const shmoo_origin_t*   orig,
+    const struct stat*      info
+    )
+{
     _input_pipe_t* in   = 0;
     size_t         size = (sizeof(*in) + snprintf(0, 0, FDNAME, desc));
 
-    if (! (in = calloc(1, size))) {
+    if (! inp || (desc < 0)) {
+        return 0;
+    } else if (! (in = calloc(1, size))) {
         return 0;
     } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
         goto error;
     }
     in->head.type = &_input_pipe_type;
-    in->head.mtim = time(0);
+    in->head.size = 0;
     in->head.name = (const uint8_t*) &in[1];
     snprintf((char*) &in[1], size, FDNAME, desc);
-    in->desc = desc;
+    in->head.mtim = time(0);
+    in->head.orig = orig;
+    in->desc      = desc;
     *inp = &in->head;
     return 1;
 
@@ -631,31 +684,47 @@ error:
 }
 
 int
-_input_pipe_shut (shmoo_input_t* _in) {
+_input_pipe_shut (
+    shmoo_input_t*          _in
+    )
+{
     _input_pipe_t* in = (_input_pipe_t*) _in;
-    if ((-1 != in->desc) && (-1 == close(in->desc))) {
-        in->desc = -1;
+
+    if (! in) {
         return 0;
-    } else {
+    } else if ((in->desc >= 0) && (-1 != close(in->desc))) {
+        in->desc = -1;
         return 1;
+    } else {
+        return 0;
     }
 }
 
 int
-_input_pipe_dest (shmoo_input_t** inp) {
-    shmoo_string_t data;
-    _input_pipe_t* in = 0;
+_input_pipe_dest (
+    shmoo_input_t**         inp
+    )
+{
+    _input_pipe_t* in   = 0;
+    shmoo_cursor_t curs = {
+        .from = 0,
+        .data = 0,
+        .size = 0,
+    };
 
     if (! inp) {
         return 0;
-    } else if (! (in = *((_input_pipe_t**) inp))) {
-        return 0;
+    } else if (! *inp) {
+        return 1;
     }
-    if (-1 != in->desc) {
+    in = (_input_pipe_t*) *inp;
+    if (! in) {
+        return 0;
+    } else if (in->desc >= 0) {
         (void) close(in->desc);
     }
-    while (shmoo_vector_remove_tail(&in->head.part, &data)) {
-        (void) munmap((void*) data.data, data.size);
+    while (shmoo_vector_remove_tail(&in->head.part, &curs)) {
+        (void) munmap(curs.data, curs.size);
     }
     shmoo_vector_free(&in->head.part);
     free(in);
@@ -664,53 +733,142 @@ _input_pipe_dest (shmoo_input_t** inp) {
     return 1;
 }
 
-uint64_t
-_input_pipe_more (shmoo_input_t* _in, uint64_t want) {
-    _input_pipe_t*  in   = (_input_pipe_t*) _in;
-    uint8_t*        mnew = MAP_FAILED;
-    uint8_t*        more = 0;
-    uint64_t        used = 0;
-    uint64_t        done = 0;
-    uint64_t        size = 0;
-    int             got  = -1;
-
-#ifdef _USE_GNU
-    uint8_t*        mold = 0;
+size_t
+_input_more_grow (
+    shmoo_input_t*          in
+    )
+{
     shmoo_cursor_t* last = 0;
-    shmoo_cursor_t  curs = {
-        .from = 0,
-        .size = 0,
-        .data = 0,
-    };
-    if ((last = shmoo_vector_tail(&in->head.part))) {
-        /* Try to join this memory blob directly to the last one. */
-        mold = (uint8_t*) last->data;
-        mnew = mremap(mold, last->size, (last->size + want), MREMAP_MAYMOVE);
-        if (MAP_FAILED == mnew) {
-            last = 0;
+    uint8_t*        mold = 0;
+    uint8_t*        mnew = MAP_FAILED;
+    size_t          page = sysconf(_SC_PAGE_SIZE);
+    uint8_t*        more = 0;
+    size_t          left = 0;
+
+    if ((last = (shmoo_cursor_t*) shmoo_vector_tail(&in->part))) {
+        if (in->size != (last->from + last->size)) {
+            /* There is empty memory at the end of the last memory map. */
+            left = (last->size - (in->head.size - last->from));
+            mnew = 0;
         } else {
-            last->data = mnew;
-            more = (mnew + last->size);
-            size = (last->size + want);
+            /* Try to join this memory blob directly to the last one. */
+#ifdef _USE_GNU
+            mnew = mremap(last->data, last->size,
+                          (last->size + page),
+                          MREMAP_MAYMOVE
+                         );
+#else
+            mnew = mmap((mold + last->size), page,
+                        (PROT_READ|PROT_WRITE),
+                        MAP_ANONYMOUS, -1, 0
+                       );
+#endif
+            if (MAP_FAILED == mnew) {
+                /* Could not join the old and new memory maps.
+                 * setting 'last' to NULL will cause a new cursor
+                 * to be inserted into the input's part vector.
+                 */
+                last = 0;
+            } else {
+                /* Successfully joined the memory maps.  Rewrite
+                 * the necessary bits of the relevant cursor in
+                 * the input part vector.
+                 */
+                last->data  = mnew;
+                last->size += page;
+            }
+            /* The amount of data left to fill. */
+            left = page;
         }
     }
-#endif
     if (MAP_FAILED == mnew) {
-        /* If this is the first allocation, or we did not join a
-         * new allocation to the last one taken, make a new one.
-         */
-        mnew = mmap(0, want, (PROT_READ|PROT_WRITE), MAP_ANONYMOUS, -1, 0);
-//        mnew = mmap(0, want, (PROT_READ|PROT_WRITE), MAP_ANON, -1, 0);
-        more = mnew;
-        size = want;
-    }
-    if (MAP_FAILED == mnew) {
-        return 0;
+        shmoo_cursor_t curs = {
+            .from = in->size,
+            .data = mmap(0, page, (PROT_READ|PROT_WRITE),
+                         MAP_ANONYMOUS, -1, 0
+                        ),
+            .size = page,
+        };
+        if (MAP_FAILED == curs.data) {
+            return 0;
+        } else if (! shmoo_vector_insert_tail(&in->part, &curs)) {
+            (void) munmap(curs.data, curs.size);
+            return 0;
+        }
+        left = page;
     }
 
+    return left;
+}
+
+int
+_input_more_trim (
+    shmoo_input_t*          in
+    )
+{
+    shmoo_cursor_t* last;
+    size_t          page = sysconf(_SC_PAGE_SIZE);
+
+    if (! (last = (shmoo_cursor_t*) shmoo_vector_tail(&in->part))) {
+        /* input empty? */
+        return 0;
+    } else if (in->size == last->from) {
+        /* entire last cursor is a new allocation */
+        shmoo_cursor_t curs;
+        if (! shmoo_vector_remove_tail(&in->part, &curs)) {
+            return 0;
+        }
+        (void) munmap(curs.data, curs.size);
+        return 1;
+    } else if ((in->size - last->from) < page) {
+        /* did not allocate new memory */
+        return 0;
+    } else {
+        /* last cursor had allocation joined */
+        uint8_t* mnew;
+#ifdef _USE_GNU
+        uint8_t* mnew = mremap(last->data, last->size,
+                               (last->size - page),
+                               MREMAP_MAYMOVE
+                              );
+        if (MAP_FAILED == mnew) {
+            return 0;
+        } else {
+            last->data  = mnew;
+        }
+#else
+        (void) munmap((last->data + (last->size - page)), page);
+#endif
+        last->size -= page;
+        return 1;
+    }
+}
+
+/* Read a pipe a page at a time, trying to merge mappings. */
+uint64_t
+_input_pipe_more (
+    shmoo_input_t*          _in
+    )
+{
+    _input_pipe_t*  in   = (_input_pipe_t*) _in;
+    shmoo_cursor_t* last = 0;
+    uint8_t*        more = 0;
+    size_t          used = 0;
+    size_t          left = 0;
+    int             got  = 0;
+
+    if (! in || (in->desc < 0)) {
+        return 0;
+    } else if (! (left = _input_more_grow(_in))) {
+        return 0;
+    } else if (! (last = (shmoo_cursor_t*) shmoo_vector_tail(&in->head.part))) {
+        return 0;
+    }
+    more = (last->data + (in->head.size - last->from));
+
     /* Read into the newly-allocated buffer. */
-    for (used = 0; used < want; ) {
-        got = read(in->desc, (more + used), (want - used));
+    for (used = 0; used < left; ) {
+        got = read(in->desc, (more + used), (left - used));
         if (got > 0) {
             used += got;
         } else {
@@ -718,54 +876,31 @@ _input_pipe_more (shmoo_input_t* _in, uint64_t want) {
         }
     }
 
-    if (! used) {
-        /* Therefore: last; we remapped to get an extra page, then
-         * didn't read any bytes from the descriptor.  Unmap the
-         * added memory chunk.
-         */
-        size = (size + want);
-        done = (size + used);
-    } else {
-        /* THerefore: used; chop the end off the mapping, as needed. */
-        size = want;
-        done = used;
+    /* If we read no data, unmap the new allocations. */
+    if (used) {
+        in->head.size += used;
+    } else if (left == sysconf(_SC_PAGE_SIZE)) {
+        _input_more_trim(_in);
     }
 
-    /* Chop the remapping down to size; presumably this is all we get. */
-#ifdef _USE_GNU
-    if (used < want) {
-        uint8_t* mrem = mremap(mnew, size, done, MREMAP_MAYMOVE);
-        if (MAP_FAILED != mrem) {
-            mnew = mrem;
-        }
+    /* Last read() got a 0 result, meaning EOF. */
+    if (! got) {
+        /* Close the file descriptor. */
+        (void) close(in->desc);
+        in->desc = -1;
     }
-
-    if (last) {
-        last->data = mnew;
-        last->size = done;
-    } else
-#endif
-    {
-        shmoo_cursor_t made = {
-            .from = in->head.size,
-            .data = mnew,
-            .size = done,
-        };
-        if (! shmoo_vector_insert_tail(&in->head.part, &made)) {
-            goto error;
-        }
-    }
-    in->head.size += used;
 
     return used;
-
-error:
-    (void) munmap(mnew, want);
-    return 0;
 }
 
 int
-_input_unix_open_path (shmoo_input_t** inp, shmoo_string_t path, const struct stat* info) {
+_input_unix_open_path (
+    shmoo_input_t**         inp,
+    shmoo_string_t          path,
+    const shmoo_origin_t*   orig,
+    const struct stat*      info
+    )
+{
     const struct sockaddr* addr = 0;
     size_t                 size = 0;
     socklen_t              alen = 0;
@@ -783,13 +918,16 @@ _input_unix_open_path (shmoo_input_t** inp, shmoo_string_t path, const struct st
     } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
         goto error;
     }
-    in->head.mtim = time(0);
+    in->head.type = &_input_unix_type;
+    in->head.size = 0;
     in->head.name = (const uint8_t*) in->addr.sun_path;
     in->addr.sun_family = AF_UNIX;
     memcpy(in->addr.sun_path, path.data, path.size);
+    in->head.mtim = time(0);
+    in->head.orig = orig;
     addr = (const struct sockaddr*) &in->addr;
 
-    alen = (offsetof(struct sockaddr_un, sun_path) + path.size + 1);
+    alen = (offsetof(struct sockaddr_un, sun_path) + path.size);
     plen = sizeof(in->peer);
     desc = socket(AF_UNIX, SOCK_STREAM, 0);
     if (-1 == desc) {
@@ -800,6 +938,8 @@ _input_unix_open_path (shmoo_input_t** inp, shmoo_string_t path, const struct st
         goto error;
     } else if (-1 == getpeername(desc, (struct sockaddr*) &in->peer, &plen)) {
         goto error;
+    } else if (plen > sizeof(in->peer)) {
+        plen = sizeof(in->peer);
     }
     in->alen = alen;
     in->plen = plen;
@@ -818,7 +958,13 @@ error:
 }
 
 int
-_input_sock_open_desc (shmoo_input_t** inp, shmoo_handle_t desc, const struct stat* info) {
+_input_sock_open_desc (
+    shmoo_input_t**         inp,
+    shmoo_handle_t          desc,
+    const shmoo_origin_t*   orig,
+    const struct stat*      info
+    )
+{
     _input_sock_t*      in = 0;
     struct sockaddr     addr;
     socklen_t           alen;
@@ -829,7 +975,7 @@ _input_sock_open_desc (shmoo_input_t** inp, shmoo_handle_t desc, const struct st
     }
 
     if (addr.sa_family == AF_UNIX) {
-        return _input_unix_open_desc(inp, desc, info);
+        return _input_unix_open_desc(inp, desc, orig, info);
 //    } else if (addr.sa_family == AF_INET) {
 //    } else if (addr.sa_family == AF_INET6) {
     }
@@ -840,7 +986,13 @@ _input_sock_open_desc (shmoo_input_t** inp, shmoo_handle_t desc, const struct st
 }
 
 int
-_input_unix_open_desc (shmoo_input_t** inp, shmoo_handle_t desc, const struct stat* info) {
+_input_unix_open_desc (
+    shmoo_input_t**         inp,
+    shmoo_handle_t          desc,
+    const shmoo_origin_t*   orig,
+    const struct stat*      info
+    )
+{
     _input_unix_t*     in   = 0;
     size_t             size = 0;
     struct sockaddr_un abuf;
@@ -863,10 +1015,14 @@ _input_unix_open_desc (shmoo_input_t** inp, shmoo_handle_t desc, const struct st
         goto error;
     } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
         goto error;
+    } else if (plen > sizeof(in->peer)) {
+        plen = sizeof(in->peer);
     }
     in->head.type = &_input_unix_type;
-    in->head.mtim = time(0);
+    in->head.size = 0;
     in->head.name = (const uint8_t*) in->addr.sun_path;
+    in->head.mtim = time(0);
+    in->head.orig = orig;
     in->alen = alen;
     in->plen = plen;
     *inp = &in->head;
@@ -879,101 +1035,24 @@ error:
     (void) info;
 }
 
-#define TBNAME "text_buffer"
-int
-_input_text_open_text (shmoo_input_t** inp, shmoo_string_t text, ...) {
-    const shmoo_origin_t* orig = 0;
-    _input_text_t*        in   = 0;
-    size_t                size = (sizeof(*in) + sizeof(TBNAME));
-    uint8_t*              data = MAP_FAILED;
-    va_list               args;
-
-    if (! inp) {
-        return 0;
-    } else if (! (in = calloc(1, size))) {
-        return 0;
-    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
-        goto error;
-    }
-    in->head.type = &_input_text_type;
-    in->head.size = text.size;
-    in->head.mtim = time(0);
-    in->head.name = (const uint8_t*) &in[1];
-    memcpy(&in[1], TBNAME, sizeof(TBNAME));
-
-    data = mmap(0, (text.size + 1), (PROT_READ|PROT_WRITE), MAP_ANONYMOUS, -1, 0);
-//    data = mmap(0, (text.size + 1), (PROT_READ|PROT_WRITE), MAP_ANON, -1, 0);
-    if (MAP_FAILED == data) {
-        goto error;
-    }
-    memcpy(data, text.data, text.size);
-    data[text.size] = '\0';
-    text.data = data;
-
-    if (! shmoo_vector_insert_tail(&in->head.part, &text)) {
-        goto error;
-    }
-
-    va_start(args, text);
-    orig = va_arg(args, const shmoo_origin_t*);
-    va_end(args);
-    in->orig = orig;
-
-    *inp = &in->head;
-
-    return 1;
-
-error:
-    if (MAP_FAILED != data) {
-        (void) munmap((void*) data, (text.size + 1));
-    }
-    free(in);
-    return 0;
-}
-
 uint64_t
-_input_file_more (shmoo_input_t* _in, uint64_t want) {
+_input_file_more (
+    shmoo_input_t*          _in
+    )
+{
     _input_file_t*  in   = (_input_file_t*) _in;
-    uint8_t*        mnew = MAP_FAILED;
     uint8_t*        more = 0;
-    uint64_t        used = 0;
-    uint64_t        done = 0;
-    uint64_t        size = 0;
-    int             got  = -1;
+    size_t          used = 0;
+    size_t          got  = 0;
 
-#ifdef _USE_GNU
-    uint8_t*        mold = 0;
-    shmoo_cursor_t* last = 0;
-    shmoo_cursor_t  curs = {
-        .from = 0,
-        .size = 0,
-        .data = 0,
-    };
-    if ((last = shmoo_vector_tail(&in->head.part))) {
-        /* Try to join this memory blob directly to the last one. */
-        mold = (uint8_t*) last->data;
-        mnew = mremap(mold, last->size, (last->size + want), MREMAP_MAYMOVE);
-        if (MAP_FAILED == mnew) {
-            last = 0;
-        } else {
-            last->data = mnew;
-            more = (mnew + last->size);
-            size = (last->size + want);
-        }
-    }
-#endif
-    if (MAP_FAILED == mnew) {
-        /* If this is the first allocation, or we did not join a
-         * new allocation to the last one taken, make a new one.
-         */
-        mnew = mmap(0, want, (PROT_READ|PROT_WRITE), MAP_ANONYMOUS, -1, 0);
-//        mnew = mmap(0, want, (PROT_READ|PROT_WRITE), MAP_ANON, -1, 0);
-        more = mnew;
-        size = want;
-    }
-    if (MAP_FAILED == mnew) {
+    if (! in || ! in->file) {
+        return 0;
+    } else if (! (left = _input_more_grow(_in))) {
+        return 0;
+    } else if (! (last = (shmoo_cursor_t*) shmoo_vector_tail(&in->head.part))) {
         return 0;
     }
+    more = (last->data + (in->head.size - last->from));
 
     /* Read into the newly-allocated buffer. */
     for (used = 0; used < want; ) {
@@ -985,55 +1064,27 @@ _input_file_more (shmoo_input_t* _in, uint64_t want) {
         }
     }
 
-    if (! used) {
-        /* Therefore: last; we remapped to get an extra page, then
-         * didn't read any bytes from the descriptor.  Unmap the
-         * added memory chunk.
-         */
-        size = (size + want);
-        done = (size + used);
-    } else {
-        /* THerefore: used; chop the end off the mapping, as needed. */
-        size = want;
-        done = used;
+    if (used) {
+        in->head.size += used;
+    } else if (left == sysconf(_SC_PAGE_SIZE)) {
+        _input_more_trim(_in);
     }
 
-#ifdef _USE_GNU
-    /* Chop the remapping down to size; presumably this is all we get. */
-    if (used < want) {
-        uint8_t* mrem = mremap(mnew, size, done, MREMAP_MAYMOVE);
-        if (MAP_FAILED != mrem) {
-            mnew = mrem;
-        }
+    /* Last fread() got no data; close the descriptor. */
+    if (! got && feof(in->file)) {
+        (void) fclose(in->file);
+        in->file = 0;
     }
-
-    if (last) {
-        last->data = mnew;
-        last->size = done;
-    } else
-#endif
-    {
-        shmoo_cursor_t made = {
-            .from = in->head.size,
-            .data = mnew,
-            .size = done,
-        };
-        if (! shmoo_vector_insert_tail(&in->head.part, &made)) {
-            goto error;
-        }
-    }
-    in->head.size += used;
 
     return used;
-
-error:
-    (void) munmap(mnew, want);
-    return 0;
 }
 
 int
-_input_file_shut (shmoo_input_t* _in) {
-    _input_file_t*  in = (_input_file_t*) _in;
+_input_file_shut (
+    shmoo_input_t*          _in
+    )
+{
+    _input_file_t* in = (_input_file_t*) _in;
     if (! in) {
         return 0;
     } else if (in->file) {
@@ -1044,14 +1095,19 @@ _input_file_shut (shmoo_input_t* _in) {
 }
 
 int
-_input_file_dest (shmoo_input_t** inp) {
+_input_file_dest (
+    shmoo_input_t**         inp
+    )
+{
     _input_file_t*  in;
     shmoo_cursor_t  curs;
 
-    if (! inp || ! *inp) {
+    if (! inp) {
         return 0;
+    } else if (! *inp) {
+        return 1;
     }
-    in = *((_input_file_t**) inp);
+    in = (_input_file_t*) *inp;
     if (in->file) {
         (void) fclose(in->file);
     }
@@ -1063,4 +1119,106 @@ _input_file_dest (shmoo_input_t** inp) {
     *inp = 0;
     return 1;
 }
+
+int
+_input_text_dest (
+    shmoo_input_t**         inp
+    )
+{
+    if (! inp) {
+        return 0;
+    } else if (! *inp) {
+        return 1;
+    } else if (! shmoo_vector_free(&in->head.part)) {
+        return 0;
+    } else {
+        free(*inp);
+        *inp = 0;
+        return 1;
+    }
+}
+
+#define ITNAME "input_text"
+int
+_shmoo_input_open_text (
+    shmoo_input_t**         inp,
+    shmoo_string_t          text,
+    const shmoo_origin_t*   orig
+    )
+{
+    _input_text_t* in   = 0;
+    shmoo_cursor_t curs = {
+        .from = 0,
+        .data = 0,
+        .size = 0,
+    };
+
+    if (! inp || ! text.data) {
+        return 0;
+    } else if (! (in = calloc(1, (sizeof(*in) + sizeof(TBNAME))))) {
+        return 0;
+    } else if (! shmoo_string_data(&text, 0, &curs.data, &curs.size)) {
+        goto error;
+    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+        goto error;
+    } if (! shmoo_vector_insert_tail(&in->head.part, &curs)) {
+        goto error;
+    }
+    in->head.type = &_input_text_type;
+    in->head.size = text.size;
+    in->head.name = (const uint8_t*) &in[1];
+    (void) memcpy(&in[1], ITNAME, sizeof(ITNAME));
+    in->head.mtim = time(0);
+    in->head.orig = orig;
+    *inp = &in->head;
+    return 1;
+    
+error:
+    shmoo_vector_free(&in->head.part);
+    free(in);
+    return 0;
+}
+
+#define IBNAME "input_buff"
+int
+_shmoo_input_open_buff (
+    shmoo_input_t**         inp,
+    const shmoo_buffer_t*   buff,
+    const shmoo_origin_t*   orig
+    )
+{
+    _input_buff_t* in   = 0;
+    shmoo_cursor_t curs = {
+        .from = 0,
+        .data = 0,
+        .size = 0,
+    };
+
+    if (! inp || ! buff) {
+        return 0;
+    } else if (! (in = calloc(1, (sizeof(*in) + sizeof(IBNAME))))) {
+        return 0;
+    } else if (! shmoo_buffer_data(buff, 0, &curs.data, &curs.size)) {
+        goto error;
+    } else if (! shmoo_vector_init(&in->head.part, &_input_part_vector_type)) {
+        goto error;
+    } else if (! shmoo_vector_insert_tail(&in->head.part, &curs)) {
+        goto error;
+    }
+
+    in->head.type = &_input_buff_type;
+    in->head.size = curs.size;
+    in->head.name = (const uint8_t*) &in[1];
+    (void) memcpy(&in[1], IBNAME, sizeof(IBNAME));
+    in->head.mtim = time(0);
+    in->head.orig = orig;
+    *inp = &in->head;
+    return 1;
+
+error:
+    shmoo_vector_free(&in->head.part);
+    free(in);
+    return 0;
+}
+
 

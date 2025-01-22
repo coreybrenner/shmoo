@@ -27,19 +27,109 @@
 #include <stdint.h>
 
 #include <shmoo/compile.h>
+
 __CDECL_BEG
 
+/*forward*/ struct _shmoo_token_type;
+typedef     struct _shmoo_token_type shmoo_token_type_t;
 /*forward*/ struct _shmoo_token;
-typedef     struct _shmoo_token shmoo_token_t;
+typedef     struct _shmoo_token      shmoo_token_t;
 
-#include <shmoo/input.h>
+#include <shmoo/state.h>
+#include <shmoo/vector.h>
+
+typedef int (*shmoo_token_dest_f) (shmoo_token_t**);
+typedef int (*shmoo_token_eval_f) (const shmoo_token_t*, shmoo_context_t*);
+
+struct _shmoo_token_type {
+    const char*                 name;
+    const shmoo_token_dest_f    dest;
+    const shmoo_token_eval_f    eval;
+};
 
 struct _shmoo_token {
-    const shmoo_input_t*    inpu;
-    uint64_t                from;
-    uint32_t                size;
-    uint32_t                span;
+    const shmoo_token_type_t*   type;
+    shmoo_state_t*              inst;       /* Input state from which this token originates */
+    uint64_t                    from;       /* byte offset of this token within the input */
+    size_t                      size;       /* byte count occupied by this token */
+    size_t                      span;       /* lines spanned by this token */
+    size_t                      last_size;  /* number of bytes lately added to this token */
+    size_t                      last_span;  /* number of lines lately added to this token */
+    shmoo_vector_t              part;
 };
+
+extern const shmoo_vector_type_t shmoo_token_vector_type;
+
+extern int shmoo_token_init (
+    shmoo_token_t*              __toke,
+    const shmoo_token_type_t*   __type,
+    shmoo_state_t*              __inst
+);
+
+extern int shmoo_token_free (
+    shmoo_token_t*              __toke,
+);
+
+extern int shmoo_token_make (
+    shmoo_token_t**             __tokep,
+    const shmoo_token_type_t*   __type,
+    const shmoo_state_t*        __inst
+);
+
+/*
+extern int shmoo_token_dest (
+    shmoo_token_t**             __tokep
+);
+*/
+
+inline int shmoo_token_dest (shmoo_token_t** tokep) {
+    return (! tokep ? 0 : (! *tokep ? 1 : (*tokep)->type->dest(tokep)));
+}
+
+extern int shmoo_token_type (const shmoo_token_t* toke, const shmoo_token_type_t** typep) {
+    return (! (toke && typep) ? 0 : ((*typep = toke->type), 1));
+}
+
+extern int shmoo_token_inst (const shmoo_token_t* toke, const shmoo_input_t** instp) {
+    return (! (toke && instp) ? 0 : ((*instp = toke->inst), 1));
+}
+
+inline int shmoo_token_from (const shmoo_token_t* toke, uint64_t* fromp) {
+    return (! (toke && fromp) ? 0 : ((*fromp = toke->from), 1));
+}
+
+inline int shmoo_token_size (const shmoo_token_t* toke, size_t* sizep) {
+    return (! (toke && sizep) ? 0 : ((*sizep = toke->size), 1));
+}
+
+inline int shmoo_token_span (const shmoo_token_t* toke, size_t* spanp) {
+    return (! (toke && spanp) ? 0 : ((*spanp = toke->span), 1));
+}
+
+inline int shmoo_token_more (shmoo_token_t* toke, size_t size, size_t span) {
+    return (! toke ? 0 : (
+            toke->last_size += size,
+            toke->last_span += span,
+            toke->size      += size,
+            toke->span      += span,
+            1
+           ));
+}
+
+extern int shmoo_token_part (
+    shmoo_token_t*              __toke,
+    shmoo_token_t*              __part
+);
+
+extern int shmoo_token_text (
+    const shmoo_token_t*        __toke,
+    uint8_t*                    __buff, /* 0: count only */
+    size_t*                     __sizep,
+    size_t*                     __spanp
+);
+
+extern int shmoo_token_show     (const shmoo_token_t*, shmoo_buffer_t*);
+extern int shmoo_token_eval     (const shmoo_token_t*, shmoo_buffer_t*, shmoo_context_t*);
 
 __CDECL_END
 

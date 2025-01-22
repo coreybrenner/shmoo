@@ -27,6 +27,7 @@
 
 #include <shmoo/string.h>   /* shmoo_string_t */
 
+/*
 int
 shmoo_string_data (
     const shmoo_string_t*   str,
@@ -58,6 +59,7 @@ shmoo_string_size (
         return 1;
     }
 }
+*/
 
 int
 shmoo_string_make (
@@ -96,6 +98,7 @@ shmoo_string_dest (
     }
 }
 
+/*
 int
 shmoo_string_init (
     shmoo_string_t*         str,
@@ -134,5 +137,5 @@ shmoo_string_copy (
         return 1;
     }
 }
-
+*/
 

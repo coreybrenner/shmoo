@@ -48,17 +48,39 @@ struct _shmoo_string {
 #endif
 };
 
+/*
 extern int shmoo_string_data (
     const shmoo_string_t*   __str,
     size_t                  __offset,
     const uint8_t**         __datap,
     size_t*                 __leftp
 );
+*/
+inline int shmoo_string_data (
+    const shmoo_string_t*   str,
+    size_t                  off,
+    const uint8_t**         datap,
+    size_t*                 leftp
+    )
+{
+    return (! (str && datap && leftp) ? 0 : (
+            ((off >= str->size) ? 0 : (
+             *datap = (str->data + off),
+             *leftp = (str->size - off),
+             1
+            ))
+           ));
+}
 
+/*
 extern int shmoo_string_size (
     const shmoo_string_t*   __str,
     size_t*                 __sizep
 );
+*/
+inline int shmoo_string_size (const shmoo_string_t* str, size_t* sizep) {
+    return (! (str && sizep) ? 0 : ((*sizep = str->size), 1));
+}
 
 extern int shmoo_string_make (
     shmoo_string_t**        __strp,
@@ -70,19 +92,46 @@ extern int shmoo_string_dest (
     shmoo_string_t**        __strp  /* pointer set to 0 after free() */
 );
 
+/*
 extern int shmoo_string_init (
     shmoo_string_t*         __str,
     const uint8_t*          __data,
     size_t                  __size
 );
+*/
+inline int shmoo_string_init (shmoo_string_t* str, const uint8_t* data, size_t size) {
+    return (! str ? 0 : (
+            str->data = data,
+            str->size = size,
+            1
+           ));
+}
 
+/*
 extern size_t shmoo_string_copy (
     const shmoo_string_t*   __str,
     size_t                  __offset,
     size_t                  __length,
     uint8_t*                __dest
 );
-
+*/
+inline size_t shmoo_string_copy (
+    const shmoo_string_t* str,
+    size_t                off,
+    size_t                len,
+    uint8_t*              dest
+    )
+{
+    size_t copy = (((off + len) > str->size) ? (str->size - off) : len);
+    return (! (str && dest) ? 0 : (
+            ((off >= str->size) ? 0 : (
+             (memcpy(dest, (str->data + off), copy),
+              copy
+             )
+            ))
+           ));
+}
+                        
 inline shmoo_string_t shmoo_string (const uint8_t* data, size_t size) {
     shmoo_string_t str = { .data = data, .size = size };
     return str;

@@ -93,8 +93,8 @@ extern size_t shmoo_cursor_copy (
     uint8_t*                __dest
 );
 
-inline shmoo_cursor_t shmoo_cursor (const uint8_t* data, size_t length, uint64_t from) {
-    shmoo_cursor_t cur = { .data = data, .size = length, .from = from };
+inline shmoo_cursor_t shmoo_cursor (const uint8_t* data, size_t size, uint64_t from) {
+    shmoo_cursor_t cur = { .data = data, .size = size, .from = from };
     return cur;
 }
 
