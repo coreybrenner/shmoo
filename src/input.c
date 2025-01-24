@@ -21,26 +21,27 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#include <alloca.h>         /* alloca */
-#include <fcntl.h>          /* open, O_... */
-#include <stdarg.h>         /* va_list, va_start, va_arg, va_end */
-#include <stdint.h>         /* uint(8|16|32|64)_t */
-#include <stdio.h>          /* snprintf */
-#include <stdlib.h>         /* calloc, free */
-#include <string.h>         /* memcpy */
-#include <time.h>           /* timespec */
-#include <unistd.h>         /* close */
-#include <sys/mman.h>       /* mmap, munmap, mremap, MAP_..., PROT_... */
-#include <sys/socket.h>     /* socket, connect, SOCK_..., AF_... */
-#include <sys/stat.h>       /* stat, fstat, S_IS... */
-#include <sys/types.h>      /* size_t, socklen_t, ... */
-#include <sys/un.h>         /* sockaddr_un */
+#include <alloca.h>
+#include <fcntl.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/un.h>
 
-#include <shmoo/cursor.h>   /* shmoo_cursor_t */
-#include <shmoo/handle.h>   /* shmoo_handle_t */
-#include <shmoo/input.h>    /* shmoo_input_t */
-#include <shmoo/vector.h>   /* shmoo_vector_t */
-#include <shmoo/buffer.h>   /* shmoo_buffer_t */
+#include <shmoo/cursor.h>
+#include <shmoo/handle.h>
+#include <shmoo/input.h>
+#include <shmoo/vector.h>
+#include <shmoo/buffer.h>
+#include <shmoo/string.h>
 
 /*forward*/ struct _input_file;
 typedef     struct _input_file _input_file_t;
@@ -269,7 +270,7 @@ shmoo_input_open_file (
 
     in->head.type = &_input_file_type;
     in->head.name = (const uint8_t*) &in[1];
-    snprintf((char*) &in[1], (size - sizeof(*in)), FPNAME, desc);
+    snprintf((char*) &in[1], (size - sizeof(*in) + 1), FPNAME, desc);
     in->head.mtim = time(0);
     in->file      = file;
     return 0;
@@ -283,21 +284,18 @@ error:
 int
 shmoo_input_open_path (
     shmoo_input_t**         inp,
-    shmoo_string_t          path
+    const char*             _path
     )
 {
-    struct stat info;
-    char*       buff;
+    shmoo_string_t path;
+    struct stat    info;
 
-    if (! inp || ! path.data || ! path.size) {
+    if (! inp || ! _path) {
         return EINVAL;
-    } else if (! (buff = alloca(path.size + 1))) {
-        return errno;
     }
-    (void) memcpy(buff, path.data, path.size);
-    buff[path.size] = '\0';
+    path = shmoo_string(_path);
 
-    if (-1 == stat(buff, &info)) {
+    if (-1 == stat(_path, &info)) {
         return errno;
     } else if (S_ISREG(info.st_mode)) {
         return (_input_mmap_open_path(inp, path, &info)
@@ -513,7 +511,7 @@ error:
     return err;
 }
 
-#define FDNAME "file_descriptor: %d"
+#define FDNAME "file_descriptor: %4d"
 int
 _input_mmap_open_desc (
     shmoo_input_t**         inp,
@@ -547,7 +545,7 @@ _input_mmap_open_desc (
     in->head.type = &_input_mmap_type;
     in->head.size = info->st_size;
     in->head.name = (const uint8_t*) &in[1];
-    snprintf((char*) &in[1], (size - sizeof(*in)), FDNAME, desc);
+    snprintf((char*) &in[1], (size - sizeof(*in) + 1), FDNAME, desc);
     in->head.mtim = info->st_mtime;
     *inp = &in->head;
     return 0;

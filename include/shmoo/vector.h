@@ -59,11 +59,11 @@ extern int shmoo_vector_dest (shmoo_vector_t**);
 extern int shmoo_vector_peek (const shmoo_vector_t*, size_t, void*);
 
 inline int shmoo_vector_used (const shmoo_vector_t* vec, size_t* usedp) {
-    return (! (vec && usedp) ? 0 : ((*usedp = vec->used), 1));
+    return (! (vec && usedp) ? EINVAL : ((*usedp = vec->used), 0));
 }
 
 inline int shmoo_vector_size (const shmoo_vector_t* vec, size_t* sizep) {
-    return (! (vec && sizep) ? 0 : ((*sizep = vec->size), 1));
+    return (! (vec && sizep) ? EINVAL : ((*sizep = vec->size), 0));
 }
 
 inline int shmoo_vector_type (const shmoo_vector_t* vec, const char** typep) {

@@ -34,11 +34,9 @@ struct _shmoo_gnumake_gmk_load {
     const char*     file;
     const char*     path;
     const char*     name;
+    const char*     bind;
 };
 
-GMK_EXPORT _shmoo_gnumake_gmk_get_loadlib (
-    const char*     path,
-    shmoo
 struct _shmoo_gnumake_gmk_floc {
     const char*     filenm;
     unsigned long   lineno;

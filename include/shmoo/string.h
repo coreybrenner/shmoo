@@ -131,9 +131,9 @@ inline size_t shmoo_string_copy (
             ))
            ));
 }
-                        
-inline shmoo_string_t shmoo_string (const uint8_t* data, size_t size) {
-    shmoo_string_t str = { .data = data, .size = size };
+
+inline shmoo_string_t shmoo_string (const char* data) {
+    shmoo_string_t str = { .data = (const uint8_t*) data, .size = strlen(data) };
     return str;
 }
 

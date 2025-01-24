@@ -40,18 +40,19 @@ typedef     struct _shmoo_buffer_type shmoo_buffer_type_t;
 typedef     struct _shmoo_buffer      shmoo_buffer_t;
 
 
-typedef int (*shmoo_buffer_dest_f) (shmoo_buffer_t**);
-typedef int (*shmoo_buffer_free_f) (shmoo_buffer_t**);
-typedef int (*shmoo_buffer_grow_f) (shmoo_buffer_t*, size_t*);
-typedef int (*shmoo_buffer_trim_f) (shmoo_buffer_t*, size_t*);
+typedef void (*shmoo_buffer_dest_f) (shmoo_buffer_t**);
+typedef void (*shmoo_buffer_free_f) (shmoo_buffer_t*);
+typedef int  (*shmoo_buffer_grow_f) (shmoo_buffer_t*, size_t);
 
 struct _shmoo_buffer_type {
-    const char*                 name;
+    const char*                 type_name;
     const shmoo_buffer_dest_f   dest;
-    const shmoo_buffer_grow_f   grow;
-    const shmoo_buffer_trim_f   trim;
     const shmoo_buffer_free_f   free;
+    const shmoo_buffer_grow_f   grow;
 };
+
+extern const shmoo_buffer_type_t shmoo_static_buffer_type;
+extern const shmoo_buffer_type_t shmoo_dynamic_buffer_type;
 
 /* shmoo_buffer_t is like a shmoo_string_t, and can be
  * cast-and-passed as one, but the 'size' field of the
@@ -65,69 +66,81 @@ struct _shmoo_buffer_type {
 struct _shmoo_buffer {
 #if defined(_Win32) || defined(_Win64)
     size_t                      used;
-    const uint8_t*              data;
+    uint8_t*                    data;
 #else
-    const uint8_t*              data;
+    uint8_t*                    data;
     size_t                      used;
 #endif
     const shmoo_buffer_type_t*  type;
     size_t                      size;
 };
 
-extern int shmoo_buffer_make (
-    shmoo_buffer_t**            __bufp,
-    const shmoo_buffer_type_t*  __type,
-    uint8_t**                   __data,
-    size_t                      __size
-);
-
-extern int shmoo_buffer_init (
-    shmoo_buffer_t*             __buf,
-    const shmoo_buffer_type_t*  __type,
+#define shmoo_buffer_make(buffp,data,size,...) \
+    (_shmoo_buffer_make((buffp),(data),(size),##__VA_ARGS__,(const shmoo_buffer_t*)0))
+extern int _shmoo_buffer_make (
+    shmoo_buffer_t**            __buffp,
     uint8_t*                    __data,
-    size_t                      __size
+    size_t                      __size,
+    ...
 );
 
-extern int shmoo_buffer_free (
-    shmoo_buffer_t*             __buf
+#define shmoo_buffer_init(buff,data,size,...) \
+    (_shmoo_buffer_make((buff),(data),(size),##__VA_ARGS__,(const shmoo_buffer_t*)0))
+extern int _shmoo_buffer_init (
+    shmoo_buffer_t*             __buff,
+    uint8_t*                    __data,
+    size_t                      __size,
+    ...
 );
 
-extern int shmoo_buffer_dest (
-    shmoo_buffer_t**            __bufp
-);
+inline int shmoo_buffer_free (shmoo_buffer_t* buff) {
+    return (! buff ? EINVAL : (buff->type->free(buff), 0));
+}
 
-extern int shmoo_buffer_data (
-    const shmoo_buffer_t*       __buf,
-    size_t                      __offset,
-    uint8_t**                   __data,
-    size_t*                     __leftp
-);
+inline int shmoo_buffer_dest (shmoo_buffer_t** buffp) {
+    return (! buffp ? EINVAL : (! *buffp ? 0 : (((*buffp)->type->dest(buffp)), 0)));
+}
 
-extern int shmoo_buffer_size (
-    const shmoo_buffer_t*       __buf,
-    size_t*                     __sizep
-);
+inline int shmoo_buffer_data (
+    const shmoo_buffer_t*       buff,
+    size_t                      offset,
+    uint8_t**                   datap,
+    size_t*                     leftp
+    )
+{
+    return (! (buff && datap && leftp)
+                ? EINVAL
+                : ((offset >= buff->used)
+                    ? ERANGE 
+                    : (  (*datap = (buff->data + offset))
+                       , (*leftp = (buff->used - offset))
+                       , 0
+                      )
+                  )
+           );
+}
 
-extern int shmoo_buffer_used (
-    const shmoo_buffer_t*       __buf,
-    size_t*                     __usedp
-);
+inline int shmoo_buffer_size (const shmoo_buffer_t* buff, size_t* sizep) {
+    return (! (buff && sizep) ? EINVAL : ((*sizep = buff->size), 0));
+}
+
+inline int shmoo_buffer_used (const shmoo_buffer_t* buff, size_t* usedp) {
+    return (! (buff && usedp) ? EINVAL : ((*usedp = buff->used), 0));
+}
+
+inline int shmoo_buffer_type (const shmoo_buffer_t* buff, const char** typep) {
+    return (! (buff && typep) ? EINVAL : ((*typep = buff->type->type_name), 0));
+}
+
+inline int shmoo_buffer_grow (shmoo_buffer_t* buff, size_t newsize) {
+    return (! buff ? EINVAL : (buff->type->grow(buff, newsize), 0));
+}
 
 extern size_t shmoo_buffer_copy (
-    const shmoo_buffer_t*       __buf,
+    const shmoo_buffer_t*       __buff,
     size_t                      __offset,
     size_t                      __length,
     uint8_t*                    __dest
-);
-
-extern int shmoo_buffer_grow (
-    shmoo_buffer_t*             __buf,
-    size_t                      __newsize
-);
-
-extern int shmoo_buffer_trim (
-    shmoo_buffer_t*             __buf,
-    size_t                      __newsize
 );
 
 __CDECL_END

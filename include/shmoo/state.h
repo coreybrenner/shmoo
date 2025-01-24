@@ -36,22 +36,23 @@ typedef     struct _shmoo_state_type shmoo_state_type_t;
 typedef     struct _shmoo_state      shmoo_state_t;
 
 #include <shmoo/input.h>
-#include <shmoo/char.h>
-#include <shmoo/string.h>
-#include <shmoo/buffer.h>
-#include <shmoo/token.h>
-#include <shmoo/vector.h>
+#include <shmoo/scan.h>
+//#include <shmoo/char.h>
+//#include <shmoo/string.h>
+//#include <shmoo/buffer.h>
+//#include <shmoo/token.h>
+//#include <shmoo/vector.h>
+//struct _shmoo_token; typedef struct _shmoo_token shmoo_token_t;
 
 typedef int (*shmoo_state_dest_f) (shmoo_state_t**);
 
 struct _shmoo_state_type {
     const char*                 type_name;
-    shmoo_state_dest_f          dest;
+    const shmoo_state_dest_f    dest;
 };
 
 struct _shmoo_state {
     const shmoo_state_type_t*   type;
-    const shmoo_token_t*        orig;
     /* shmoo_state can shmoo_input_more() the input layer,
      * so this cannot be a pointer to const.
      */
@@ -68,45 +69,46 @@ struct _shmoo_state {
 
 extern const shmoo_vector_type_t shmoo_state_vector_type;
 
-extern int shmoo_state_make (
+#define shmoo_state_make(statep,type,in,...) \
+    (_shmoo_state_make((statep),(type),(in),##__VA_ARGS__,(size_t)0))
+extern int _shmoo_state_make (
     shmoo_state_t**             __statep,
     const shmoo_state_type_t*   __type,
     shmoo_input_t*              __in,
-    const shmoo_token_t*        __orig
+    ...
 );
 
 extern int shmoo_state_init (
     shmoo_state_t*              __state,
     const shmoo_state_type_t*   __type,
-    shmoo_input_t*              __in,
-    const shmoo_token_t*        __orig
+    shmoo_input_t*              __in
 );
 
 extern int shmoo_state_free (
     shmoo_state_t*              __state
 );
 
-inline int shmoo_state_dest (shmoo_state_t** statep) {
+static inline int shmoo_state_dest (shmoo_state_t** statep) {
     return (! statep ? EINVAL : (! *statep ? 0 : (*statep)->type->dest(statep)));
 }
 
 /* Obtain the state's input */
-inline int shmoo_state_input (const shmoo_state_t* state, shmoo_input_t** inp) {
-    return (! (state && inp) ? EINVAL : (((*inp = state->inpu)), 1));
+static inline int shmoo_state_input (const shmoo_state_t* state, shmoo_input_t** inp) {
+    return (! (state && inp) ? EINVAL : (((*inp = state->inpu)), 0));
 }
 
 /* Obtain the amount of the input already used up */
-inline int shmoo_state_used (const shmoo_state_t* state, uint64_t* usedp) {
-    return (! (state && usedp) ? EINVAL : (((*usedp) = state->used), 1));
+static inline int shmoo_state_used (const shmoo_state_t* state, uint64_t* usedp) {
+    return (! (state && usedp) ? EINVAL : (((*usedp) = state->used), 0));
 }
 
 /* Obtain the size of the underlying input layer object. */
-inline int shmoo_state_size (const shmoo_state_t* state, uint64_t* sizep) {
+static inline int shmoo_state_size (const shmoo_state_t* state, uint64_t* sizep) {
     return (! (state && sizep) ? EINVAL : shmoo_input_size(state->inpu, sizep));
 }
 
 /* Obtain a cursor to the current input buffer */
-inline int shmoo_state_data (
+static inline int shmoo_state_data (
     const shmoo_state_t*    state,
     uint64_t                offset,
     const uint8_t**         datap,
@@ -120,7 +122,7 @@ inline int shmoo_state_data (
 }
 
 /* Move input state read pointer backward */
-inline int shmoo_state_back (shmoo_state_t* state, size_t bytes) {
+static inline int shmoo_state_back (shmoo_state_t* state, size_t bytes) {
     return (((! state) || (bytes > state->used)) ? EINVAL : ((state->used -= bytes), 1));
 }
 
@@ -145,52 +147,49 @@ inline int shmoo_state_read_byte (shmoo_state_t* state, uint8_t* bytep) {
 /* Scan the current input to find the shape and
  * length of the next character; note: not byte.
  */
-inline int shmoo_state_peek (
+static inline int shmoo_state_peek (
     shmoo_state_t*          state,
     shmoo_scan_f            scan_func,
     void*                   scan_state,
-    void*                   valp,
-    size_t*                 sizep
+    shmoo_cursor_t*         scan_result
     )
 {
-    return (! (state && scan_func && valp && sizep)
+    return (! (state && scan_func && scan_result)
                 ? EINVAL
                 : shmoo_input_scan(
                       state->inpu,
                       state->used,
                       scan_func,
                       scan_state,
-                      valp,
-                      sizep
+                      scan_result
                   )
            );
 }
 
 /* same as shmoo_state_peek_char(), but advances the input state */
-inline int shmoo_state_read (
+static inline int shmoo_state_read (
     shmoo_state_t*              state,
     const shmoo_scan_f          scan_func,
     void*                       scan_state,
-    void*                       valp,
-    size_t*                     sizep
+    shmoo_cursor_t*             scan_result
     )
 {
     int result = 0;
-    return (! (state && scan_func && valp && sizep)
+    return (! (state && scan_func && scan_result)
                 ? EINVAL
                 : ((result = shmoo_input_scan(
                       state->inpu,
                       state->used,
                       scan_func,
                       scan_state,
-                      valp,
-                      sizep
-                      )) ? result
-                         : ((state->used += *sizep), result)
+                      scan_result
+                    )) ? result
+                       : ((state->used += scan_result->size), result)
                   )
            );
 }
 
+/*
 extern int shmoo_state_make_token (
     const shmoo_state_t*        __state,
     shmoo_token_t**             __tokep,
@@ -222,6 +221,7 @@ extern int shmoo_state_save_token (
     shmoo_state_t*              __state,
     shmoo_token_t*              __toke
 );
+*/
 
 extern int shmoo_state_save_state (
     shmoo_state_t*              __state,

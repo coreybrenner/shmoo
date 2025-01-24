@@ -37,17 +37,19 @@ typedef     struct _shmoo_input_type shmoo_input_type_t;
 /*forward*/ struct _shmoo_input;
 typedef     struct _shmoo_input      shmoo_input_t;
 
-#include <shmoo/scan.h>
-#include <shmoo/handle.h>
 #include <shmoo/vector.h>
+
+/* Make visible as soon as possible, for other headers' use. */
+extern const shmoo_vector_type_t shmoo_input_vector_type;
+
+#include <shmoo/scan.h>
 #include <shmoo/cursor.h>
-#include <shmoo/string.h>
-#include <shmoo/token.h>
 
 typedef int (*shmoo_input_more_f) (shmoo_input_t*);
 typedef int (*shmoo_input_shut_f) (shmoo_input_t*);
 typedef int (*shmoo_input_dest_f) (shmoo_input_t**);
 
+/* These need to be visible ahead of the inline functions. */
 struct _shmoo_input_type {
     const char*                 type_name;
     shmoo_input_more_f          more;
@@ -64,37 +66,31 @@ struct _shmoo_input {
     shmoo_vector_t              part;
 };
 
-extern const shmoo_vector_type_t shmoo_input_vector_type;
+/* These functions are needed inline by other headers. */
 
-extern int shmoo_input_open_file (
-    shmoo_input_t**                 __inp,
-    FILE*                           __file
-);
+static inline int shmoo_input_dest (shmoo_input_t** inp) {
+    return (! inp ? 0 : (! *inp ? 1 : (*inp)->type->dest(inp)));
+}
 
-extern int shmoo_input_open_path (
-    shmoo_input_t**                 __inp,
-    shmoo_string_t                  __path
-);
+static inline int shmoo_input_more (shmoo_input_t* in) {
+    return (! in ? 0 : in->type->more(in));
+}
 
-extern int shmoo_input_open_desc (
-    shmoo_input_t**                 __inp,
-    shmoo_handle_t                  __desc
-);
+static inline int shmoo_input_shut (shmoo_input_t* in) {
+    return (! (in && in->type) ? 0 : in->type->more(in));
+}
 
-extern int shmoo_input_open_text (
-    shmoo_input_t**                 __inp,
-    shmoo_string_t                  __text
-);
+static inline int shmoo_input_size (const shmoo_input_t* in, uint64_t* sizep) {
+    return (! (in && sizep) ? 0 : ((*sizep = in->size), 1));
+}
 
-extern int shmoo_input_open_buff (
-    shmoo_input_t**                 __inp,
-    const shmoo_buffer_t*           __buff
-);
+static inline int shmoo_input_type (const shmoo_input_t* in, const char** typep) {
+    return (! (in && typep) ? 0 : ((*typep = in->type->type_name), 1));
+}
 
-extern int shmoo_input_open_toke (
-    shmoo_input_t**                 __inp,
-    const shmoo_token_t*            __toke
-);
+static inline int shmoo_input_refs (const shmoo_input_t* in, size_t* refsp) {
+    return (! (in && refsp) ? 0 : ((*refsp = in->refs), 1));
+}
 
 extern int shmoo_input_data (
     shmoo_input_t*                  __in,
@@ -102,44 +98,6 @@ extern int shmoo_input_data (
     const uint8_t**                 __datap,
     size_t*                         __leftp
 );
-
-extern int shmoo_input_copy (
-    shmoo_input_t*                  __in,
-    uint64_t                        __offset,
-    size_t                          __length,
-    uint8_t*                        __dest,
-    uint64_t*                       __usedp
-);
-
-extern int shmoo_input_init (
-    shmoo_input_t*                  __in,
-    const shmoo_input_type_t*       __type
-);
-
-inline int shmoo_input_dest (shmoo_input_t** inp) {
-    return (! inp ? 0 : (! *inp ? 1 : (*inp)->type->dest(inp)));
-}
-
-inline int shmoo_input_more (shmoo_input_t* in) {
-    return (! in ? 0 : in->type->more(in));
-}
-
-inline int shmoo_input_shut (shmoo_input_t* in) {
-    return (! (in && in->type) ? 0 : in->type->more(in));
-}
-
-//#error HEY HERE WE ARE
-inline int shmoo_input_size (const shmoo_input_t* in, uint64_t* sizep) {
-    return (! (in && sizep) ? 0 : ((*sizep = in->size), 1));
-}
-
-inline int shmoo_input_type (const shmoo_input_t* in, const char** typep) {
-    return (! (in && typep) ? 0 : ((*typep = in->type->type_name), 1));
-}
-
-inline int shmoo_input_refs (const shmoo_input_t* in, size_t* refsp) {
-    return (! (in && refsp) ? 0 : ((*refsp = in->refs), 1));
-}
 
 extern int shmoo_input_scan (
     /***
@@ -180,6 +138,50 @@ extern int shmoo_input_scan (
     shmoo_scan_f                    __scan_func,
     void*                           __scan_state,
     shmoo_cursor_t*                 __scan_result
+);
+
+extern int shmoo_input_copy (
+    shmoo_input_t*                  __in,
+    uint64_t                        __offset,
+    size_t                          __length,
+    uint8_t*                        __dest,
+    uint64_t*                       __usedp
+);
+
+/* Needed for shmoo_input_open_... */
+#include <shmoo/handle.h>
+#include <shmoo/string.h>
+#include <shmoo/buffer.h>
+#include <shmoo/token.h>
+
+extern int shmoo_input_open_file (
+    shmoo_input_t**                 __inp,
+    FILE*                           __file
+);
+
+extern int shmoo_input_open_path (
+    shmoo_input_t**                 __inp,
+    const char*                     __path
+);
+
+extern int shmoo_input_open_desc (
+    shmoo_input_t**                 __inp,
+    shmoo_handle_t                  __desc
+);
+
+extern int shmoo_input_open_text (
+    shmoo_input_t**                 __inp,
+    shmoo_string_t                  __text
+);
+
+extern int shmoo_input_open_buff (
+    shmoo_input_t**                 __inp,
+    const shmoo_buffer_t*           __buff
+);
+
+extern int shmoo_input_open_toke (
+    shmoo_input_t**                 __inp,
+    const shmoo_token_t*            __toke
 );
 
 __CDECL_END

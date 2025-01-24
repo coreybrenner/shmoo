@@ -27,14 +27,14 @@
 #include <stdint.h>
 
 #include <shmoo/compile.h>
-#include <shmoo/cursor.h>
 
 __CDECL_BEG
 
 /* Be able to work with Unicode, etc. */
 typedef uint32_t shmoo_char_t;
-
 #define SHMOO_CHAR_INVALID  ((shmoo_char_t)-1)
+
+#include <shmoo/cursor.h>
 
 typedef int (*shmoo_char_scan_f) (
     /***
