@@ -528,3 +528,92 @@ SHMOO_STASH: {
 ---
 
 *End of design questions document.*
+
+---
+
+## 14. OS/2 Path Handling and Rexx Logical Disk Feature
+
+### The Question
+
+How does OS/2's handling of paths differ from Windows, and can OS/2's Rexx logical disk feature (AttachDir/Setlocal) inform Shmoo's VFS logical volume design?
+
+### OS/2 vs Windows — Key Differences
+
+**Path Separators and Command-Line Syntax:**
+- **Windows (DOS heritage):** Paths use `\` (backslash), switches use `/` (forward slash)
+- **OS/2:** Paths use `\` (or `/`), switches use `/` (like Unix)
+- **Implication:** OS/2 command-line tools don't have the `/` vs `\` ambiguity that Windows has when paths are passed as arguments
+
+**HPFS (High Performance File System):**
+- Introduced in OS/2 1.2 (1989) by IBM
+- Long filenames (like Windows 95 LFN, but earlier)
+- Case-insensitive, case-preserving (like NTFS)
+- Alternate data streams called "Extended Attributes"
+- 64-byte filename limit (8.3 mode: 8+3+2)
+- Different directory structure than FAT/NTFS
+
+**Logical Drive Attachment (OS/2 vs Windows):**
+- **Windows:** Drive letters always tied to physical/virtual partitions (`C:`, `D:`) or network shares (`net use`)
+- **OS/2:** Drive letters can be attached to arbitrary directories via `AttachDir` — no physical partition required
+- **Example:** `SETLOCAL D:=C:\some\arbitrary\directory` makes `D:` point to any directory
+
+### OS/2 Rexx Setlocal and AttachDir
+
+OS/2's Rexx scripting language provides a `Setlocal` command and `AttachDir` functionality that creates scoped logical drives:
+
+```rexx
+// In Rexx script
+CALL Setlocal                    // Create local environment
+"AttachDir D: = C:\some\dir"  // D: now points to C:\some\dir
+// ... operations using D: ...
+CALL Setlocal                    // Destroy local environment, D: mapping lost
+```
+
+**Key features:**
+1. **No physical disk required** — drive letters can map to arbitrary directories
+2. **Scoped environment** — `Setlocal` creates an isolated drive mapping context
+3. **Case-insensitive, case-preserving** — HPFS/OS/2 semantics
+4. **Removable** — `Setlocal` destroys the local environment and all mappings
+
+### How This Informs Shmoo's VFS Design
+
+OS/2's `AttachDir` is conceptually closer to Shmoo's logical volumes than Windows' drive letters:
+
+| Feature | Windows | OS/2 | Shmoo (proposed) |
+|---------|---------|------|------------------|
+| Drive/Vol name | `C:` | `D:` | `SRC:` |
+| Physical backing | Required (partition/device) | Not required | Not required |
+| Arbitrary directory | No (only via mount) | Yes (`AttachDir`) | Yes (`Volume:DIR`) |
+| Scoped/mutable | No (system-wide) | Yes (`Setlocal`) | Yes (per-session) |
+| Grafting | No | No | Yes (multiple dirs under one volume) |
+| Protection modes | No | No | Yes (scratch, direct, read-only) |
+
+**Relevance to Shmoo's VFS:**
+1. **OS/2's `AttachDir` is the closest historical precedent** for attaching directories as logical volumes without physical backing
+2. **OS/2's `Setlocal` scoping** inspires how Shmoo's VFS context should be isolated between environments
+3. **HPFS case-insensitive, case-preserving semantics** align with the VFS layer's case handling requirements
+4. **OS/2 command-line `/` for switches** avoids the path/switch ambiguity that Windows has
+
+### Open Questions
+
+- Can OS/2's `AttachDir` concept be adapted for cross-environment VFS mounting?
+- How does `Setlocal` scoping compare to Shmoo's configuration stash approach?
+- Should Shmoo's volumes support scoped/unscoped variants (like `Setlocal` vs system-wide)?
+- How do we handle case sensitivity when grafting directories from different filesystems?
+
+### Sources
+
+- **IBM OS/2 Documentation** — Setlocal and AttachDir references
+  - `https://www-01.ibm.com/support/knowledgecenter/ssz89b_6.0/com.ibm.r42.os2.doc/rx_rexx.html`
+  - Covers Setlocal, AttachDir, and Rexx environment scoping
+- **OS/2 1.2 Release Notes** (1989)
+  - Introduction of HPFS filesystem
+  - Installable filesystems architecture
+- **HPFS Specification** (IBM)
+  - Extended Attributes (alternate data streams)
+  - 64-byte filename limits
+  - Case-insensitive, case-preserving semantics
+
+---
+
+*End of design questions document.*
