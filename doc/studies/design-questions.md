@@ -1294,3 +1294,194 @@ Simple, text-based or Binary (MessagePack).
 - **Security:** How do we prevent a client from "spoofing" the Daemon or injecting malicious mount maps? (Mutual TLS? Authentication tokens?)
 - **Parallelism:** Can the Daemon handle thousands of simultaneous Interceptors? (Single-threaded event loop vs. multithreaded?)
 - **Client-Side Caching:** The Interceptor shouldn't ask the Daemon for *every* read. It should cache the mount map. How do we handle cache invalidation (versioning)?
+
+---
+
+## 22. Compiler Include Path Interception and Grafting
+
+### The Question
+
+By intercepting standard library headers (like those in `/usr/include`) and providing a "stack of directories" to the compiler (like GCC), can we make GCC (and the compiler's preprocessor) "see" the Shmoo volumes (e.g., `SRC:`, `OBJ:`, `SYS:`) as part of its standard include and library search path?
+
+### The Approach: Daemon-Driven Include Stacks
+
+The **Shmoo Daemon** maintains the global logical names (`SYS$`, `SRC:`, `OBJ:`) and their physical backing (e.g., `/mnt/src`, `/tmp/scratch`).
+
+The **Interceptor** (injected into the `gcc` or `cc` process) intercepts file system operations (`open()`, `stat()`, `opendir()`, `readdir()`). It makes the VFS volumes visible to the compiler as virtual directories on a "stack."
+
+**The Stack Layout:**
+```
+/shmoo/stack: (The Virtual Search Path)
+├── /shmoo/stack/01_SRC    -> [VFS:SRC] (Source headers)
+├── /shmoo/stack/02_OBJ    -> [VFS:OBJ] (Build object headers)
+├── /shmoo/stack/03_SYS    -> [VFS:SYS] (System headers)
+└── /shmoo/stack/04_HOST   -> /usr/include (System host headers)
+```
+
+When the compiler preprocessor asks for `math.h`:
+1.  It checks `/shmoo/stack/01_SRC/math.h`.
+2.  The Interceptor asks the Daemon: "Where is `SRC:/math.h`?"
+3.  The Daemon replies: "It's at `/mnt/src/lib/math.h`."
+4.  The Interceptor makes `math.h` appear to exist at `/shmoo/stack/01_SRC/math.h` by serving the file from `/mnt/src/lib/math.h`.
+5.  If it's not found in `SRC`, the preprocessor checks `02_OBJ`, and so on.
+
+### Parallelism and the "Illusion"
+
+Because the **Daemon** manages the stack:
+*   Every compiler process injected with the Interceptor sees the **exact same stack**.
+*   If a build step changes the `OBJ:` volume (e.g., by mounting a new build artifact directory), all compiler processes see it immediately.
+*   This ensures **parallel builds** use the same, consistent include order and source files, preventing "it worked on my machine" bugs.
+
+### VMS/OS/2 Integration
+
+VMS and OS/2 already do this natively:
+*   **VMS:** Compilers automatically search `SYS$INCLUDE`, `SYS$LIBRARY`, and user-defined logical names.
+*   **OS/2:** HPFS and Rexx allow defining custom logical names (e.g., `OBJ:`) that the compiler can see as directories.
+
+Shmoo can replicate this behavior perfectly:
+1.  The Daemon provides the "System" logical names (`SYS$:`, `SRC:`, `OBJ:`).
+2.  The Interceptor exposes them as directories (e.g., `/shmoo/SYS$INCLUDE`, `/shmoo/SRC`, `/shmoo/OBJ`).
+3.  We configure GCC (via a wrapper or `CC` environment variable) to look at these paths *in a specific order*.
+
+### Open Questions
+
+1.  **Interception Level:** Should we intercept `stat()`/`open()` for every file the compiler tries to read? (Heavy overhead)
+2.  **Compiler Integration:** Should we provide a "Shmoo GCC" wrapper that injects `LD_PRELOAD` automatically?
+3.  **Conflict Resolution:** If `math.h` exists in both `SRC:` and `OBJ:`, the "stack" order decides. How do we enforce this order consistently across all compiler calls?
+4.  **Parallelism:** Can the Daemon handle thousands of compiler processes asking for the same headers simultaneously?
+5.  **Cache Coherence:** If the Interceptor caches the include path stack, how do we ensure it's always up to date when the Daemon modifies the `SRC:` or `OBJ:` mounts?
+
+---
+
+## 23. Isolated Build Environments — The "Standard Root" Pattern
+
+### The Question
+
+Instead of sharing a common VFS illusion, can the Daemon give each build process its own **mount map** that makes the build *think* it's working from a standard root filesystem (like `/usr/include`, `/lib`, `/bin`), but actually only sees the specific volumes assigned to that build?
+
+### The "Standard Root" Isolation Pattern
+
+Each build process gets a **tailored mount map** that presents a completely standard-looking filesystem structure, but every path is a volume reference that the Daemon translates to the actual data the build is allowed to see:
+
+**Build A's Mount Map:**
+```
+/          → [VFS:BUILD_ROOT_A] (scratch workspace)
+   /include → [VFS:INC_A] (project A headers only)
+   /lib     → [VFS:LIB_A] (project A libs only)
+   /bin     → [VFS:TOOLCHAIN_A] (compiler binaries)
+```
+
+**Build B's Mount Map:**
+```
+/          → [VFS:BUILD_ROOT_B] (scratch workspace)
+   /include → [VFS:INC_B] (completely different headers)
+   /lib     → [VFS:LIB_B] (completely different libs)
+   /bin     → [VFS:TOOLCHAIN_B] (different toolchain)
+```
+
+Each build process believes it's rooted at `/`, has `/include`, `/lib`, and `/bin`, and is compiling normally. The Daemon handles all the translation, and the Interceptor makes it transparent.
+
+### How It Works
+
+1. **Daemon assigns a mount map to each build.** The map is a set of volume definitions that the build is allowed to see. For example, `BUILD_ROOT_A` is a scratch directory, `INC_A` is a logical volume pointing to specific headers.
+
+2. **The Interceptor intercepts every filesystem operation.** When Build A's compiler calls `open("/include/math.h")`, the Interceptor asks the Daemon: *"What is `/include` in this build's mount map?"*
+
+3. **The Daemon translates the path.** It looks up Build A's mount map, finds that `/include` maps to `[VFS:INC_A]`, and returns the resolved path within that volume.
+
+4. **The Interceptor applies the translation.** The compiler's `open("/include/math.h")` becomes a request to the Daemon for `INC_A:/math.h`, and the Interceptor translates that to the actual location within `INC_A`.
+
+5. **The build sees no difference.** It thinks it's working from a standard filesystem. It never sees the volumes or the Daemon. The isolation is completely transparent.
+
+### Why This Matters
+
+1. **No kernel namespaces needed.** On macOS and Windows, where we can't do `clone(CLONE_NEWNS)`, the Daemon/Interceptor model achieves the same effect: each build sees only what it's meant to see, without any kernel-level isolation.
+
+2. **Deterministic isolation.** The build environment is fully reproducible because the Daemon controls every volume mount. No accidental inclusion of `/usr/include` from the host system. Every file operation is within the build's assigned volumes.
+
+3. **Dynamic mount maps.** The Daemon can modify the mount map at any time — adding a new volume, removing an old one, redirecting a path — and the build sees the change immediately (with version-based cache invalidation).
+
+4. **Audit trail per build.** Every file operation in Build A is logged against Build A's context. If a build is suspected of tampering, you can replay the exact sequence of mount operations and file accesses for that specific build.
+
+5. **Parallel builds, different environments.** You can have 100 builds running simultaneously, each with its own mount map, each seeing a completely different filesystem. No cross-build contamination.
+
+6. **Dynamic chroot without privileges.** This is essentially a **dynamic chroot** — a jail that's built entirely through the VFS layer. No need for `chroot()`, `pivot_root()`, or `namespace(2)` calls. The Daemon is the "prison guard," the Interceptor is the "cell wall," and the mount map is the "prison rules."
+
+### Implementation Considerations
+
+**Mount Map Design:**
+```yaml
+build_map:
+  id: build_a
+  root: [VFS:BUILD_ROOT_A]
+  mounts:
+    - path: /include
+      volume: [VFS:INC_A]
+      read_only: true
+      protection: direct
+    - path: /lib
+      volume: [VFS:LIB_A]
+      read_only: false
+      protection: scratch_copy_on_write
+    - path: /bin
+      volume: [VFS:TOOLCHAIN_A]
+      read_only: true
+      protection: direct
+  working_directory: /
+```
+
+**Cache Invalidation:**
+- The Interceptor caches the mount map for each build.
+- The Daemon increments a version number whenever the mount map changes.
+- The Interceptor checks the version on every filesystem operation (or at least periodically).
+- On version mismatch, the Interceptor re-fetches the mount map from the Daemon.
+
+**Path Translation:**
+- Build A calls `open("/include/math.h")`.
+- Interceptor looks up Build A's mount map: `/include` → `[VFS:INC_A]`.
+- Interceptor asks Daemon: *"Where is `INC_A:/math.h`?"*
+- Daemon resolves to actual path: `/mnt/volumes/inc_a/math.h`.
+- Interceptor calls real `open()` with the resolved path.
+- Build A never knows the truth.
+
+### Comparison to Existing Approaches
+
+| Approach | How it isolates | Privileges needed | Portability |
+|----------|-----------------|-------------------|-------------|
+| Linux mount namespaces | `clone(CLONE_NEWNS)` | `CAP_SYS_ADMIN` | Linux only |
+| Docker containers | `namespace(2)` + cgroups | Root/Docker group | Linux only |
+| macOS sandbox profiles | seatbelt/`sandbox_init()` | No special privileges | macOS only |
+| Windows containers | Container namespaces | Admin/ContainerManager | Windows only |
+| **Shmoo mount maps** | Daemon/Interceptor translation | None (user-level) | **All platforms** |
+
+The Shmoo approach is the only one that:
+- Works on all platforms (Linux, macOS, Windows, OS/2)
+- Requires no special privileges (runs entirely in user space)
+- Can be modified dynamically at runtime
+- Provides per-build isolation without kernel intervention
+- Integrates naturally with the VFS illusion model
+
+### Open Questions
+
+1. **Map granularity:** Should each build have its own mount map, or can builds share maps if they're identical? (Shared maps reduce Daemon overhead.)
+
+2. **Map inheritance:** Can child processes inherit the parent's mount map? (If Build A spawns Build B, does B inherit A's map or get a new one?)
+
+3. **Map versioning:** How fine-grained should versioning be? (Global version vs. per-volume version vs. per-path version?)
+
+4. **Map serialization:** Can mount maps be saved/loaded? (This would enable build recording and replay.)
+
+5. **Map security:** How do we prevent a build from "escaping" its mount map? (If Build A's compiler tries to `open("/etc/passwd")`, the Interceptor should return ENOENT or similar. What other attack vectors exist?)
+
+6. **Performance impact:** Does translating every path through the Daemon add measurable overhead? (Cache invalidation, IPC latency, etc.)
+
+7. **Nested maps:** Can a build mount another build's mount map? (e.g., Build A mounts Build B's map as a subdirectory for cross-compilation.)
+
+8. **Dynamic map updates:** If the Daemon changes a volume's path (e.g., `/include` now points to a different volume), how do we notify all builds using that map? (Signal? Poll? Version check?)
+
+### Sources
+
+- **Linux `namespace(2)` man page** — Linux mount namespace implementation
+- **Docker container architecture** — How Docker uses `clone(CLONE_NEWNS)` for container isolation
+- **macOS Sandbox Profiles** — `sandbox_init()` and seatbelt for process sandboxing
+- **Windows Container Architecture** — Container namespaces (network, PID, mount) introduced in Windows 10/Server 2016
