@@ -1,12 +1,12 @@
 # Design Questions — Open Issues for Shmoo
 
-**Last updated:** 2026-08-19  
+**Last updated:** 2026-08-20  
 **Purpose:** Track unresolved design questions, open implementation approaches, and architectural decisions under review.  
 These are NOT final decisions. They are areas where the approach must be determined, tested, and validated before code implementation begins.
 
 ---
 
-## 1. Interposition via LD_PRELOAD
+## 1. LD_PRELOAD / DLL Injection for VFS Interception
 
 ### The Question
 
@@ -527,10 +527,6 @@ SHMOO_STASH: {
 
 ---
 
-*End of design questions document.*
-
----
-
 ## 14. OS/2 Path Handling and Rexx Logical Disk Feature
 
 ### The Question
@@ -564,7 +560,7 @@ OS/2's Rexx scripting language provides a `Setlocal` command and `AttachDir` fun
 ```rexx
 // In Rexx script
 CALL Setlocal                    // Create local environment
-"AttachDir D: = C:\some\dir"  // D: now points to C:\some\dir
+"AttachDir D: = C:\some\dir"    // D: now points to C:\some\dir
 // ... operations using D: ...
 CALL Setlocal                    // Destroy local environment, D: mapping lost
 ```
@@ -613,10 +609,6 @@ OS/2's `AttachDir` is conceptually closer to Shmoo's logical volumes than Window
   - Extended Attributes (alternate data streams)
   - 64-byte filename limits
   - Case-insensitive, case-preserving semantics
-
----
-
-*End of design questions document.*
 
 ---
 
@@ -923,4 +915,382 @@ hints = {"compress": "lz4", "mode": "fast"}
 
 ---
 
-*End of design questions document.*
+## 18. Filesystem Namespace Isolation — Cross-Platform Comparison
+
+### The Question
+
+How do Linux, macOS, and Windows handle per-process or per-process-group filesystem isolation, and what does this mean for Shmoo's VFS architecture?
+
+### Linux: Mount Namespaces
+
+Linux has **mount namespaces** via `clone(CLONE_NEWNS)` or `unshare(CLONE_NEWNS)`:
+
+```c
+pid_t child = clone(child_func, stack_top, CLONE_NEWNS | SIGCHLD, NULL);
+// Child and its descendants see a completely independent mount table
+// Parent's mounts are invisible to the child and vice versa
+// Can bind-mount, union-mount, COW layers, etc.
+```
+
+**Capabilities:**
+- Per-process-group mount table — every mount operation is scoped to the namespace
+- Bind mounts, union mounts (overlayfs, aufs), COW layers — all namespace-aware
+- Built into the kernel — no per-call overhead
+- Exportable via `/proc/PID/mountinfo` for audit/replay
+
+**Requirements:**
+- Root or `CAP_SYS_ADMIN` capability
+- Linux-only (kernel feature)
+
+### macOS: No Mount Namespaces
+
+macOS has **no equivalent** to Linux mount namespaces. The filesystem namespace is global.
+
+**Available capabilities:**
+- **Mount operations:** `mount(2)` is global — any process with sufficient privileges can mount/unmount
+- **SIP (System Integrity Protection):** Heavily restricts mount operations, even for root
+- **NSFileProvider framework:** User-space file provider for iCloud Drive. On-demand file mounting, but per-app and user-level — not a per-process-group namespace
+- **FUSE (MacFUSE, FUSEX):** Third-party FUSE implementations. System-wide — any process can see FUSE-mounted filesystems
+- **Sandbox profiles (seatbelt):** Restrict file access, but don't create a new filesystem view. Blocked files return ENOENT/EPERM — access control, not namespace isolation
+- **macOS Containers (macOS 13+):** Per-app sandboxed data directories with scoped file access. **Data isolation** only — **no filesystem view isolation**. No independent mount table, so you can't bind-mount or union-mount directories in a way that only the container sees
+
+**Bottom line:** You can restrict access to files (sandbox profiles, containers) or provide virtual filesystems (FUSE, FileProvider), but you cannot create an isolated filesystem view for a process group the way Linux does with mount namespaces.
+
+### Windows: No Mount Namespaces
+
+Windows is similarly lacking. The file system namespace is fundamentally global and monolithic.
+
+**Available capabilities:**
+- **Junction points and symbolic links:** Path redirection at the NTFS level, but these are global and permanent. `mklink /D` and `MountVol` create them system-wide — every process sees them
+- **Alternate Data Streams:** Metadata attached to files, not related to filesystem views
+- **Impersonation tokens:** Change a process's security context, which affects *access* to files, not the *view*
+- **Windows Filter Manager:** Kernel-mode or user-mode file system filter drivers (antivirus, backup, encryption). Global — a filter applies to all processes. You can check the current process, but you can't make it active only for one process group
+
+**Filter drivers that come close (but fall short):**
+- **File system minifilter drivers:** Hook I/O operations at the file system driver level. You can implement per-process logic by checking the current process, but the filter itself is registered globally.
+- **WinFsp / Dokany:** FUSE-like implementations for Windows (user-mode file systems). Like macOS FUSE, these are system-wide. You can't give one process group a different view.
+- **VirtualDisk API:** Attach/detach virtual disks, but these are system-wide block devices.
+
+**What Windows lacks:**
+- No per-process or per-process-group mount table
+- No equivalent to `clone(CLONE_NEWNS)` or `unshare(CLONE_NEWNS)`
+- No way to make a bind mount, union mount, or COW layer visible to only one process group
+
+**Windows Containers caveat:** Windows 10 (1709+) and Windows Server 2016+ have namespaces for containers (network, PID, mount), but this is a container engine feature, not a system call you can use for arbitrary process groups.
+
+### Comparison Table
+
+| Capability | Linux | macOS | Windows |
+|-----------|-------|-------|---------|
+| Mount namespaces | `clone(CLONE_NEWNS)`, `unshare(CLONE_NEWNS)` | **No** — global namespace | **No** — global namespace |
+| Per-process filesystem view | Yes | No | No |
+| Per-process-group filesystem view | Yes (all threads in a namespace) | No | No |
+| Bind mounts | Yes | No (only global) | No (junctions are global) |
+| COW/Overlay layers | Yes (overlayfs, btrfs, LVM) | No | No |
+| Union mounts | Yes (overlayfs, aufs, btrfs) | No | No |
+| User-mode filesystems | FUSE (system-wide) | FUSE (system-wide) | WinFsp/Dokany (system-wide) |
+| Access restriction per-process | Yes (namespaces + seccomp) | Sandbox profiles (seatbelt) | ACLs + impersonation |
+| Container support | Docker, LXC, systemd-nspawn | Sandbox containers (data only) | Windows Containers (namespace support) |
+
+### Implications for Shmoo
+
+This is a significant architectural consideration:
+
+1. **Linux:** Mount namespaces are the ideal mechanism for per-process-group filesystem isolation. Each process group gets its own filesystem view with bind mounts, COW layers, and union mounts.
+
+2. **macOS/Windows:** Cannot provide true per-process filesystem isolation. The VFS layer must be implemented differently:
+   - **LD_PRELOAD / DLL injection:** Intercept every file operation (as we've been discussing). Gives per-process filesystem control, but at the cost of intercepting every call rather than using namespace isolation.
+   - **FUSE/WinFsp:** Provide a system-wide virtual filesystem, but all processes see the same view. You can't give one process group a different view.
+
+3. **The LD_PRELOAD approach we discussed is actually the best option for non-Linux platforms** because it gives you per-process filesystem interception — the closest you can get to namespace isolation on those platforms.
+
+### Open Questions
+
+- Can OS/2's `AttachDir` concept be adapted for cross-environment VFS mounting?
+- How does `Setlocal` scoping compare to Shmoo's configuration stash approach?
+- Should Shmoo's volumes support scoped/unscoped variants (like `Setlocal` vs system-wide)?
+- How do we handle case sensitivity when grafting directories from different filesystems?
+- Can we abstract mount namespace semantics so the same build scripts work on all platforms?
+- Should we build a fallback VFS layer for macOS/Windows that uses DLL injection/LD_PRELOAD when namespaces aren't available?
+
+---
+
+## 19. Audit Trails — Filesystem Transaction Logging
+
+### The Question
+
+How can we represent changes to the filesystem state so that an audit trace can see a picture of the filesystem as it existed at the time of the build? Can we build a running log of filesystem transactions into a shared blob, so the picture updates as each filesystem call is made?
+
+### Cross-Platform Audit Approaches
+
+**Linux: Mount Namespaces + LD_PRELOAD**
+- The namespace itself is the audit trail — every mount operation is recorded in the namespace's mount table
+- `mount(2)` calls are logged by the preload library or by `auditd`/`systemd`
+- Export the mount table via `/proc/PID/mountinfo` to reconstruct the exact filesystem state at any point
+- Every file operation goes through the namespace's mount table, giving implicit audit of graft/mount mappings
+
+**Windows: File System Filter Drivers + ETW**
+- **Minifilter drivers:** Intercept I/O operations at the file system driver level. Can log every file operation to a buffer, but the driver is registered globally
+- **ETW (Event Tracing for Windows):** System-wide tracing framework. Enable `Microsoft-Windows-Kernel-File` provider to get a complete audit trail of every file operation, but it's system-wide, not per-process-group
+- **DLL injection:** Intercept filesystem calls via DLL injection (Windows equivalent of `LD_PRELOAD`). Log each operation to shared memory for per-process audit trails
+
+**OS/2: API Hooking + Shared Memory**
+- Install an API hook on filesystem functions (`DosOpen`, `DosClose`, `DosRead`, `DosWrite`, `DosDelete`, `DosRename`)
+- Log each intercepted call to a shared memory blob
+- An audit consumer reads the blob and builds a picture of filesystem state changes
+- OS/2 also has `ApiLog` and `ApiMon` utilities for tracing system calls (primarily for debugging)
+
+### The Shared Blob Approach (Cross-Platform)
+
+Regardless of platform, a **shared blob** approach works for cross-platform audit trails:
+
+**Blob Structure:**
+```c
+typedef struct {
+    uint64_t sequence;      // Global sequence number
+    uint64_t timestamp;     // Nanosecond timestamp
+    pid_t pid;              // Process ID
+    uint32_t operation;     // OP_OPEN, OP_WRITE, OP_DELETE, etc.
+    char path[MAX_PATH];    // File path
+    uint64_t path_len;      // Length of path
+    uint32_t result;        // Success/failure code
+    uint32_t mount_id;      // Mount/volume ID for this operation
+    uint64_t offset;        // File offset (for reads/writes)
+    uint64_t bytes;         // Bytes read/written
+    uint8_t case_sensitive; // Whether this path is case-sensitive
+    uint8_t is_short_name;  // Whether this is an 8.3 short name
+} vfs_log_entry_t;
+```
+
+**How It Works:**
+1. **Initialize the blob** when the preload library loads — allocate shared memory via platform-specific means (`mmap` on Linux, `CreateFileMapping` on Windows, `DosAllocSHARED` on OS/2)
+2. **Log every filesystem operation** — append-only log entry with sequence number, timestamp, process ID, operation, path, result, mount ID, offset, bytes
+3. **Consume the blob** in an audit process — replay operations to reconstruct filesystem state at any point
+
+**Blob Options:**
+| Option | Pros | Cons |
+|--------|------|------|
+| Circular buffer | Fixed size, no overflow | Can lose old entries |
+| Log with rotation | Keeps all entries, rotates on full | More complex management |
+| Log to disk (mmap) | Survives crash, persists across restarts | Requires disk I/O, slower |
+| Log to both memory and disk | Best of both worlds | Most complex |
+
+**Audit Trail Representation:**
+The audit trail should be a complete log of every filesystem operation, structured so it can be replayed to reconstruct the filesystem state at any point. Each entry should include:
+- **Process ID** — which process made the call
+- **Timestamp** — when the call was made
+- **Operation** — open, read, write, close, delete, rename, mkdir, rmdir, symlink, link, etc.
+- **Path** — the full file path (long and short if applicable)
+- **Result** — success/failure code (errno, Windows ERROR_*)
+- **Mount/volume ID** — which volume/mount point was involved
+- **Case handling** — whether the path is case-sensitive, whether it's a short name
+- **Offset/bytes** — for reads/writes: the file offset and number of bytes
+
+### Platform Comparison
+
+| Capability | Linux | Windows | OS/2 |
+|-----------|-------|---------|------|
+| Mount namespaces | `clone(CLONE_NEWNS)` — built-in | **No** — global namespace | **No** — global namespace |
+| Per-process filesystem view | Yes | No (via DLL injection) | No (via API hooking) |
+| Per-process-group view | Yes | No (via DLL injection) | No (via API hooking) |
+| File system filter drivers | Yes (global, but can filter by namespace) | Yes (global, but can filter by process) | No |
+| ETW/system tracing | Yes (`auditd`, `auditctl`) | Yes (ETW, `tracelog`) | Yes (`ApiLog`, `ApiMon`) |
+| Shared memory logging | `mmap` / `shmget` | `CreateFileMapping` | `DosAllocSHARED` |
+| DLL injection / API hooking | `LD_PRELOAD` | `LoadLibrary` / `Detours` | API hooking |
+| Audit trail per-process | Yes (via namespace + preload) | Yes (via DLL + shared memory) | Yes (via hook + shared memory) |
+| Audit trail per-process-group | Yes (via namespace) | No (only per-process) | No (only per-process) |
+
+### Recommendations
+
+**For Linux:**
+- Use mount namespaces (`clone(CLONE_NEWNS)`) for per-process-group filesystem isolation
+- Use `LD_PRELOAD` for VFS interception and audit trail logging
+- Export the mount table via `/proc/PID/mountinfo` for audit
+- Use `auditd` or `systemd-audit` for system-wide tracing
+
+**For Windows:**
+- Use DLL injection for VFS interception and audit trail logging
+- Use `CreateFileMapping` for the shared blob
+- Use ETW for system-wide tracing (if you need it)
+- Consider file system filter drivers if you need system-wide tracing
+
+**For OS/2:**
+- Use API hooking for VFS interception and audit trail logging
+- Use `DosAllocSHARED` for the shared blob
+- Use `ApiLog` for system-wide tracing (if you need it)
+
+**Cross-platform:**
+- The shared blob approach works on all platforms
+- The blob should be append-only to avoid lock contention
+- Each process appends its own operations
+- An audit consumer can replay the operations to reconstruct the filesystem state
+- The log format should be platform-independent (JSON, CSV, or a custom binary format)
+
+**Final recommendation:**
+The **shared blob approach** is the best cross-platform solution for audit trails. It gives you per-process filesystem logging, works on all platforms, and can be extended to include the VFS layer's graft/mount mappings and case handling information. On Linux, you can also use mount namespaces for additional isolation, but the shared blob works everywhere.
+
+### Open Questions
+
+- What is the performance overhead of logging every filesystem call to the shared blob?
+- Should we use ring buffers, append-only logs, or something else for the shared blob?
+- How do we handle crash recovery — does the audit trail need to survive a process crash?
+- Should we use a binary format for the blob (faster, smaller) or a text format (easier to debug)?
+- Can we integrate the audit trail with the build prediction system to learn which files are read/written during builds?
+- Should we provide a tool to replay the audit trail and reconstruct the exact filesystem state at any point?
+- Can the audit trail be used to validate reproducibility across different builds?
+
+---
+
+## 20. URL Path Hints and Extensions
+
+### The Question
+
+URL path encoding can contain hints attached to each leg of the path, so a server can select or aggregate data to represent a subset of the content in its result set. Could this be an achievable feature for Shmoo's path handling mechanisms?
+
+### Concept
+
+In HTTP, URL paths can encode structured hints that servers use to optimize responses. For example:
+- `GET /api/users/{id}/posts/{date:2024-01}` — hints at the aggregation level (group by month)
+- `GET /data/region:us-west/dataset:weather/format:csv` — selects region, dataset, and format
+- `GET /files/sparse::metadata` — requests only metadata, not full content
+
+This is similar to **path parameters**, **query parameters**, or **media type negotiation**, but encoded directly in the path structure.
+
+### Relevance to Shmoo's VFS
+
+Shmoo's path handling could use a similar approach for:
+- **Selective file access:** Request only metadata, headers, or specific sections of a file
+- **Virtual filesystem aggregation:** A single path could resolve to data from multiple sources (e.g., `vfs:local::data:vfs:remote::data` means "aggregate data from local and remote sources")
+- **Compression/encoding hints:** `file.dat?enc=compress` or `file.dat::lz4` to request compressed data on the fly
+- **Mount hints:** `mount:tmpfs` to specify the target filesystem type for a mount operation
+
+### Implementation Approach
+
+**Path extension syntax:**
+```
+/path/to/resource::hint1:value1,hint2:value2
+```
+
+**Parsing logic:**
+```c
+// Example: parse "/data/files::compress,lz4::mode:fast"
+path = "/data/files"
+hints = {"compress": "lz4", "mode": "fast"}
+```
+
+**VFS integration:**
+1. The path parser detects `::` as a hint separator
+2. Hints are extracted and parsed into a key-value map
+3. The VFS layer consults the hints to select/aggregate data
+4. The original path is passed to the underlying filesystem
+
+**Example use cases:**
+- `vfs:/data::compress,zstd` — compress data on-the-fly before returning it
+- `vfs:/data::aggregate,monthly` — aggregate data by month (like HTTP's date parameter)
+- `vfs:/data::sparse,metadata` — return only metadata, not full content
+- `vfs:/data::mount,tmpfs` — mount the path as a tmpfs overlay
+
+### Pros
+- Clean, extensible API — hints are part of the path, not separate parameters
+- VFS layer can handle hints transparently — applications don't need to know about hints
+- Hints are encoded in the path, so they're visible in logs, traces, and audit trails
+- Similar to existing URL path encoding patterns, so developers will find it familiar
+
+### Cons
+- Non-standard — not part of RFC 3986 or POSIX
+- Requires careful parsing — hints must be distinguished from path segments
+- May conflict with file/directory names that contain `::`
+- Hints must be stripped before passing to the underlying filesystem
+
+### Open Questions
+- Should Shmoo use a standard URL path encoding (like RFC 6920 or RFC 6570) or a custom syntax?
+- How do we handle hints in non-HTTP contexts (local filesystem, VFS mounts)?
+- Should hints be case-sensitive or case-insensitive?
+- How do we handle hints in cross-environment path translation (do hints survive translation)?
+- Can hints be used for cross-environment data selection (e.g., "compress this data before sending to the Windows VM")?
+- Should we use a standardized hint syntax (like `key:value` pairs) or a more expressive format (like JSON)?
+
+### Sources
+- **RFC 6570** — URI Template (path parameter encoding)
+- **RFC 6920** — Media Type Negotiation (content selection hints)
+- **HTTP/2 Path Compression** — Path segments as hints for server optimization
+- **URL Path Encoding** — Existing patterns for encoding structured data in paths
+
+---
+
+## 21. The Shmoo Daemon/Interceptor Architecture
+
+### The Question
+
+The VFS layer is implemented via a **Daemon/Interceptor** model. How do we make the shared blob parallelizable, represent the "illusion" (current state of mounts/grafts), and audit state changes across a network?
+
+### The Architecture
+
+The "VFS Illusion" is managed by a centralized **Daemon** (the "Brain") and intercepted by client-side **Interceptor** libraries (the "Eyes/Hands").
+
+#### A. The Shmoo Daemon (The Brain)
+A centralized service that owns the **Canonical Mount Tree**.
+- **Responsibilities:**
+  - Maintain the global logical name table.
+  - Validate mount requests (is `SRC:` already mounted? does the path exist?).
+  - Record audit logs of every state change (mount, graft, scratch creation).
+  - Distribute the "Illusion" to clients via IPC (Unix Sockets on Linux/macOS/OS/2, Named Pipes or TCP sockets on Windows).
+
+#### B. The Interceptor (The Eyes/Hands)
+A client-side library injected via `LD_PRELOAD` (Linux/macOS/OS/2) or DLL injection (Windows).
+- **Responsibilities:**
+  - **Intercept System Calls:** Hook `open()`, `stat()`, `rename()`, `mkdir()`.
+  - **Path Translation:** When an application asks for `SRC:/path/file`, the Interceptor asks the Daemon: *"Where does `SRC:` point right now, and is there a local scratch overlay?"*
+  - **Apply Overlay:** If the volume is "Scratch" (COW), the Interceptor creates a copy-on-write wrapper, redirecting the write to a local scratch directory while the Daemon knows it's part of a virtual layer.
+  - **Reporting:** The Interceptor notifies the Daemon of changes (e.g., "I just created `SRC:/path/file`").
+
+### VMS Logical Name Integration
+
+The Daemon/Interceptor model maps perfectly onto the VMS Logical Name architecture:
+
+| VMS Concept | Shmoo Equivalent | Description |
+|-------------|------------------|-------------|
+| **System Table** | **Daemon Global State** | The "World's Truth." Defines the global mounts, volume names (e.g., `SRC:`, `OBJ:`), and their physical backing. Networkable. |
+| **Process Table** | **Client Overlay** | Maintained by the **Interceptor**. Contains local overrides. If a process defines `SRC:` to point to a different local scratch area, it "conceals" the global `SRC:` definition. |
+| **Concealment** | **Shadowing** | The Process table shadows the System table for that specific process. `DEFINE/NOCONCEAL` restores the global view. |
+| **Search List** | **Union Mount** | A logical name pointing to a list of directories (`DIR1;DIR2`). The Interceptor (or Daemon) resolves this list into a union view. |
+| **Privileges** | **Daemon Security** | The Daemon enforces "Read-Only" logical definitions for the user, while the build system (the process) can only modify its own local namespace. |
+
+### Auditing and the "Illusion"
+
+The **Illusion** is the state of the filesystem *as seen by the user*, which might be different from the physical reality due to grafts, overlays, and mount maps.
+
+1. **Centralized Logging:** The Daemon keeps a **Mutable Log** of every state change. Every time a volume is mounted, unmounted, or a scratch layer is created, the Daemon writes an entry: `TIMESTAMP ACTION USER PATH`.
+2. **Networkability:** Because the Daemon is central, it captures *everything*, regardless of where the physical writes happen. A remote client can access a "Remote VFS Illusion" by connecting to the Daemon over the network.
+3. **Audit Trail:** The Daemon logs every IPC call (mount, unmount, scratch creation). This provides a complete, verifiable history of the build environment's evolution.
+
+### The IPC Protocol (Example)
+Simple, text-based or Binary (MessagePack).
+
+*Request (Resolve):*
+```json
+{ "action": "resolve_path", "path": "SRC:src/build.o", "pid": 1024 }
+```
+
+*Response:*
+```json
+{ 
+  "resolved": "/tmp/shmoo/scratch/src/build.o", 
+  "mode": "scratch_copy_on_write", 
+  "version": 42 
+}
+```
+
+*Request (Log Access):*
+```json
+{ "action": "log_access", "path": "SRC:src/build.o", "mode": "write", "pid": 1024, "version": 42 }
+```
+
+### Open Questions
+
+- **IPC Performance:** How do we keep the latency between the Interceptor and Daemon low enough that it doesn't slow down the build? (In-memory caching of the versioned mount map?)
+- **Offline Handling:** What happens if the Daemon is unreachable? Should the Interceptor cache the state?
+- **Conflict Resolution:** What happens if two Interceptors try to mount different physical paths to the same logical name `SRC:`? (Centralized locking on the Daemon?)
+- **Security:** How do we prevent a client from "spoofing" the Daemon or injecting malicious mount maps? (Mutual TLS? Authentication tokens?)
+- **Parallelism:** Can the Daemon handle thousands of simultaneous Interceptors? (Single-threaded event loop vs. multithreaded?)
+- **Client-Side Caching:** The Interceptor shouldn't ask the Daemon for *every* read. It should cache the mount map. How do we handle cache invalidation (versioning)?
