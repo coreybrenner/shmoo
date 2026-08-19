@@ -239,6 +239,14 @@ C:\PROGRA~1\APP.EXE
 7. **Maximum path length:** 260 characters (`MAX_PATH`). Up to 32,767 with `\\?\` prefix.
 8. **Component limit:** 255 UTF-16 code units per component (NTFS).
 
+**Historical note — slash vs backslash split:**
+
+The reason Windows uses backslash while Unix uses forward slash has a concrete historical origin. MS-DOS 1 used `/` for both command-line switches AND paths, like Unix. When MS-DOS 2.0 introduced subdirectories, it needed a new path separator. According to Microsoft's own MS-DOS 2.0 source code README.txt (intended to guide OEMs on building custom DOS builds), **IBM requested that the path separator be changed from `/` to `\`** — Microsoft had originally planned to use `/`, but the change happened late in the development process. This is also why the MS-DOS kernel ended up supporting both characters: it was too late to change over fully.
+
+Additionally, DOS 2.0 introduced `SWITCHAR` — a configurable switch character accessible via INT 21h functions 3700h/3701h and a `CONFIG.SYS` option. Setting `SWITCHAR=-` would make DOS syntax more Unix-like (using `-` instead of `/` for switches). All manufacturer-supplied commands would obey this character. However, `SWITCHAR` was removed from CONFIG.SYS in DOS 3.0, though the syscalls remain available to this day.
+
+In practice, this means Windows kernels internally support both `/` and `\` as path separators — `/` is accepted by most Windows APIs for backward compatibility, though `\` is the canonical form for display.
+
 ### Disallowed Characters in Path Components (Chris Denton, Filesystems)
 
 From Chris Denton's analysis of Windows filesystem drivers ([omnipath/Filesystems.html](https://chrisdenton.github.io/omnipath/Filesystems.html)):
@@ -1240,6 +1248,298 @@ The C implementation (with Inline::C) would:
   - Complete reference for logical name syntax and semantics.
 - **The OpenVMS FAQ** (HPE/OpenVMS community) — [http://vms.documentacion.tk/vmsdoc/](http://vms.documentacion.tk/vmsdoc/)
   - DEFINE command and logical name table management.
+
+### Case Sensitivity and Filesystem Representation
+
+This is a critical factor that must be tracked at every level: the path parser, the path resolver, and the VFS layer. Case sensitivity affects path matching, hash computation, conflict detection, and file I/O semantics.
+
+**Why case sensitivity matters in Shmoo:**
+1. **Path equality** — `src/Makefile` and `src/makefile` are different paths on POSIX but the same path on DOS/Windows
+2. **Hash collision detection** — building a path hash for change detection must account for the FS's case rules
+3. **VFS write operations** — `touch src/Makefile` on a case-insensitive FS creates one file; on POSIX, it creates another
+4. **Cross-environment translation** — a case-preserved path on Windows may become ambiguous on POSIX
+5. **Conflict resolution** — detecting when two paths refer to the same file on a case-insensitive FS
+
+**Case sensitivity rules by filesystem:**
+
+| Filesystem | Case | Case-Preserving | Example |
+|------------|------|-----------------|---------|
+| POSIX/Linux (ext4, xfs, btrfs) | **Case-sensitive** | Yes | `File.txt` ≠ `file.txt` (different files) |
+| POSIX/macOS (HFS+) | **Case-insensitive** | Yes | `File.txt` = `file.txt` (same file, original case preserved) |
+| POSIX/macOS (APFS) | **Case-insensitive** (default) / **Case-sensitive** (option) | Yes | Configurable at volume creation |
+| DOS/Windows (FAT12/16/32) | **Case-insensitive** | No (DOS mode) / **Yes** (LFN) | `FILE.TXT` = `file.txt`; LFN stores original case but lookup is case-insensitive |
+| DOS/Windows (NTFS) | **Case-insensitive** | Yes | `FILE.TXT` = `file.txt`; case preserved in metadata |
+| OS/2 (HPFS) | **Case-insensitive** | Yes | Like NTFS, case-insensitive but case-preserving |
+| Classic MacOS (HFS) | **Case-insensitive** | Yes | `: ` delimiter, case-insensitive comparison, case preserved |
+| Classic MacOS (HFS+) | **Case-insensitive** | Yes | Unicode NFD normalization, case-insensitive comparison |
+| Amiga (FFS/OFS, AmigaDOS) | **Case-sensitive** | Yes | `FILE.OBJ` ≠ `file.obj` (different files) |
+
+**POSIX filesystems:**
+- **ext4, xfs, btrfs**: Case-sensitive by default. Can be case-insensitive if compiled with `d_type` support and mounted with `d_type=casefold`, but this is not default.
+- **HFS+**: Case-insensitive by default, case-preserving. The filesystem normalizes filenames to Unicode NFD form and compares them case-insensitively.
+- **APFS**: Can be created as case-insensitive (default, macOS) or case-sensitive (`-c ascii`). Must be chosen at volume creation.
+- **NFSv4**: Case-sensitive by default, but can be configured for case-insensitive semantics.
+
+**DOS/Windows filesystems:**
+- **FAT12/16/32**: Case-insensitive by definition. In 8.3 mode, case is lost (stored as uppercase). In LFN mode, case is preserved in metadata but comparison is case-insensitive.
+- **NTFS**: Case-insensitive by default, case-preserving. The file name is stored in Unicode and compared case-insensitively using Windows locale rules (including handling of diacritics).
+- **exFAT**: Case-insensitive like FAT, case-preserving like NTFS.
+
+**OS/2 filesystems:**
+- **HPFS** (High Performance File System): Case-insensitive, case-preserving, with 64-byte filename limit (8.3 mode: 8+3+2).
+- **JFS** (Journaled File System, ported from OS/2): Case-insensitive, case-preserving.
+
+**Classic MacOS (HFS/HFS+):**
+- Uses `:` as path separator instead of `/`
+- Case-insensitive, case-preserving
+- HFS: Filename length limited to 31 characters (255 UTF-8 in HFS+)
+- HFS+: Uses Unicode NFD normalization. `é` (U+00E9, composed form) and `é` (U+0065 + U+0301, decomposed form) are the same filename.
+- In macOS, the FUSE-based filesystems (like FUSE-HFS) can preserve case sensitivity.
+
+**Amiga filesystems:**
+- **OFS/FFS**: Case-sensitive, case-preserving.
+- **AmigaDOS**: The command-line layer is case-sensitive.
+- **SFS** (Smart File System): Case-sensitive, case-preserving.
+
+### Tracking Case Sensitivity in the Path Library
+
+The path library must track case sensitivity at multiple levels:
+
+**1. Path classification:**
+When classifying a path, note the **expected case sensitivity** based on the path type:
+- POSIX absolute (`/home/...`): Case-sensitive
+- DOS absolute (`C:\...`): Case-insensitive
+- Volume logical (`SRC:...`): Depends on the volume's underlying filesystem
+
+```
+function classify(path):
+    result = classify_type(path)
+    result.case_sensitive = depends_on_type(result.type)
+    return result
+```
+
+**2. Path comparison:**
+When comparing two paths, the comparison must be context-aware:
+```
+function paths_equal(a, b, case_sensitive):
+    if case_sensitive:
+        return normalize(a) == normalize(b)
+    else:
+        return normalize(a).lower() == normalize(b).lower()
+```
+
+**3. Hash computation:**
+When building a path hash for change detection, hash the **canonical form** based on the FS rules:
+```
+function path_hash(path, case_sensitive):
+    canon = normalize(path)
+    if not case_sensitive:
+        canon = canon.lower()  # or unicode-normalize + lowercase
+    return hash(canon)
+```
+
+**4. VFS operations:**
+When the VFS receives a path, it must apply the correct case rules based on the target filesystem:
+```
+vfs_open(path, flags):
+    fs_type = get_filesystem_for_path(path)
+    case_sensitive = fs_type.is_case_sensitive()
+    
+    # Find existing file with correct case sensitivity
+    file_handle = vfs_find(path, case_sensitive)
+    
+    if flags.WRITE and file_handle and not case_sensitive:
+        # Case-insensitive FS: update case to match original if different
+        vfs_preserve_case(file_handle, path)
+    
+    return file_handle
+```
+
+### Cross-Environment Case Translation
+
+When translating paths across environments with different case rules:
+
+**POSIX → DOS:**
+```
+/home/src/Makefile → C:\src\Makefile
+# POSIX case-sensitive: file is named Makefile
+# DOS case-insensitive: stored as MAKEFILE (8.3) or Makefile (LFN)
+# When reading back: MAKEFILE (DOS 8.3) or Makefile (LFN)
+# Both refer to the same file on the DOS side
+```
+
+**DOS → POSIX:**
+```
+C:\src\MAKEFILE → /home/src/makefile
+# DOS case-insensitive: MAKEFILE, Makefile, makefile are all the same file
+# POSIX case-sensitive: must choose one form
+# The VFS layer must record the original case preserved in DOS
+# Result: /home/src/Makefile (preserving the case Windows stored it as)
+```
+
+**POSIX → Amiga:**
+```
+/home/src/Makefile → DF0:src/Makefile
+# POSIX case-sensitive
+# Amiga case-sensitive
+# Direct mapping, no ambiguity
+```
+
+**Amiga → POSIX:**
+```
+DF0:src/MAKEFILE → /home/src/MAKEFILE
+# Amiga case-sensitive: MAKEFILE is a different file from makefile
+# POSIX case-sensitive: same
+# Direct mapping, no ambiguity
+```
+
+### Case Preservation Across Transitions
+
+For case-preserving filesystems (NTFS, HFS+, APFS, LFN FAT, Amiga FFS), the VFS layer must:
+1. Record the **original case** when a file is created or first encountered
+2. Use the **original case** when reading back or comparing paths
+3. Preserve the case when translating to other environments that support case preservation
+
+For case-loosing filesystems (FAT 8.3 mode), the VFS layer must:
+1. Accept that case is lost (converted to uppercase)
+2. Warn when case sensitivity is important and the target FS doesn't support it
+3. Track the **loss** in the configuration chain for audit purposes
+
+```
+vfs_operation_log: {
+    operation: "create_file",
+    path: "/home/src/Makefile",
+    target_fs: "FAT32",
+    case_sensitive: false,
+    case_preserving: false,
+    stored_as: "MAKEFILE",  # Case lost
+    warning: "Case preservation not supported by target filesystem (FAT32 8.3 mode)"
+}
+```
+
+### Conflict Detection
+
+When case-insensitive filesystems are involved, the VFS layer must detect and prevent conflicts:
+
+```
+function detect_case_conflict(paths, case_sensitive):
+    seen = {}
+    conflicts = []
+    
+    for path in paths:
+        key = normalize_case(path, case_sensitive)
+        
+        if key in seen:
+            if seen[key] != path:
+                conflicts.append({
+                    "canonical": key,
+                    "conflicting_paths": [seen[key], path],
+                    "fs_case_sensitive": case_sensitive,
+                })
+        else:
+            seen[key] = path
+    
+    return conflicts
+```
+
+**Example:**
+On a case-insensitive DOS filesystem:
+```
+src/Makefile   → key: src/makefile
+src/makefile   → key: src/makefile  → CONFLICT
+src/MAKEFILE   → key: src/makefile  → CONFLICT
+```
+
+The VFS layer must flag all three as referring to the same physical file, and prevent operations that assume they are distinct.
+
+---
+
+## 16. Cross-Platform Character Sets and Case Sensitivity
+
+### Comprehensive Character Set Comparison
+
+| Character | POSIX (ext4) | FAT32 (8.3) | NTFS | HFS+ | Amiga FFS | Notes |
+|-----------|--------------|-------------|------|------|-----------|-------|
+| `A-Z`, `a-z`, `0-9` | ✅ | ✅ | ✅ | ✅ | ✅ | Allowed everywhere |
+| `_` (underscore) | ✅ | ✅ | ✅ | ✅ | ✅ | Safe |
+| `-` (hyphen) | ✅ | ✅ | ✅ | ✅ | ✅ | Allowed, but POSIX warns against leading `-` |
+| `.` (period) | ✅ | ✅ | ✅ | ✅ | ✅ | Special (`.` and `..`), but allowed in filenames |
+| `:` (colon) | ⚠️ Restricted | ❌ No | ❌ No | ⚠️ Converted to `/` | ⚠️ Volume separator | POSIX: allowed but restricted. DOS: drive/stream separator. MacOS: converted to `/`. Amiga: device/volume separator. |
+| `/` (slash) | ❌ No (separator) | ❌ No | ❌ No | ✅ (on HFS+, but converted to `:`) | ✅ | POSIX/DOS: path separator. HFS+: converted to `:`. Amiga: not separator (but `/` may have special meaning in some tools). |
+| `\` (backslash) | ✅ | ✅ | ⚠️ Separator | ✅ | ✅ | DOS: primary separator. POSIX/Amiga: allowed. MacOS: ambiguous (backslash vs backspace). |
+| ` ` (space) | ✅ | ✅ (leading OK) | ✅ | ✅ | ✅ | DOS: trailing spaces stripped in 8.3 mode. Leading spaces OK everywhere. |
+| `*` `?` | ⚠️ FS-dependent | ❌ No | ❌ No | ⚠️ FS-dependent | ⚠️ FS-dependent | Wildcards must be disallowed for API usability. |
+| `<` `>` `"` `|` | ✅ (ext4) / FS-dependent | ❌ No | ❌ No | ✅ | ✅ | DOS: reserved. POSIX: allowed by POSIX but some FSs (ext4) allow. |
+| `+` `,` `;` `=` `[` `]` | ✅ | ❌ No | ✅ | ✅ | ✅ | DOS: some reserved (+, ,). POSIX: all allowed. |
+| `!` `$` `'` `(` `)` `@` `~` | ✅ | ✅ | ✅ | ✅ | ✅ | All allowed |
+| `0x00` (NUL) | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No | NUL terminates C strings |
+| `0x01`–`0x1F` (C0) | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No | Control codes, disallowed |
+| `0x7F` (DEL) | ✅ (ext4) | ❌ No | ✅ (NTFS) | ✅ | ✅ | Some FSs allow DEL |
+| `0x80`–`0xFF` | ✅ (UTF-8) | ✅ (OEM codepage) | ✅ (UTF-16) | ✅ (UTF-8/16) | ✅ (ASCII) | High-bit bytes vary by encoding |
+| Non-ASCII Unicode | ✅ (UTF-8) | ✅ (LFN) | ✅ (UTF-16) | ✅ (UTF-16) | ✅ (AmigaDOS UTF-8) | High-bit characters vary by FS encoding |
+
+### Character Set Summary by Type
+
+**DOS 8.3 (SFN):**
+- Allowed: `A-Z`, `0-9`, space, `! # $ % & ' ( ) - @ ^ _ ` { } ~`
+- Disallowed: lowercase `a-z`, `" * / : < > ? \ | + , . ; = [ ]`, `0x00`–`0x1F`, `0x7F`, `0xE5` (in some implementations)
+- OEM codepage 0x80–0xFF allowed
+- Case: stored as uppercase, case lost
+
+**DOS/Windows LFN (Long Filename):**
+- All Unicode characters except: `\`, `/`, `:`, `?`, `*`, `"`, `<`, `>`, `|`, `NUL`
+- Case-insensitive, case-preserving (NTFS) / case-insensitive, case-lossing (FAT)
+
+**POSIX:**
+- All characters except: NUL (`0x00`), `/` (path separator)
+- High-bit characters allowed (UTF-8 on modern systems)
+- Wildcard characters (`*`, `?`) allowed but must be disallowed for API usability
+- Some filesystems (ext4) allow `"`, `<`, `>`, `|`; others (JFS) may restrict them
+
+**HFS+ (Classic MacOS):**
+- All Unicode characters except: `:`, `NUL`, `/`
+- `:` is the path separator (converted from `/`)
+- Case-insensitive, case-preserving
+- Unicode NFD normalization applied
+
+**Amiga FFS:**
+- All characters except: `:`, `;` (volume/directory separators), NUL
+- 30-character filename limit
+- Case-sensitive, case-preserving
+- `/` is not a separator but may have special meaning in AmigaDOS commands
+
+**OS/2 HPFS:**
+- All Unicode characters except: `\`, `/`, `:`, `?`, `*`, `"`, `<`, `>`, `|`, `NUL`
+- 64-character filename limit (8.3 mode: 8+3+2)
+- Case-insensitive, case-preserving
+
+### URL Character Sets (RFC 3986, §2)
+
+**Unreserved (no encoding needed):**
+- `A-Z`, `a-z`, `0-9`
+- `-`, `.`, `_`, `~`
+
+**Reserved (special meaning, must be percent-encoded as data):**
+- Component delimiters: `:`, `/`, `?`, `#`
+- Authority delimiters: `[`, `]`, `@`
+- Sub-delimiters: `!`, `$`, `&`, `'`, `(`, `)`, `*`, `+`, `,`, `;`, `=`
+
+**Percent-encoding:**
+- Format: `%HH` (where HH are two hex digits)
+- Used when a reserved character is needed as data
+
+### Key Design Decisions for Shmoo
+
+1. **Every path component carries its case-sensitivity flag** — not just the path itself
+2. **VFS operations are always case-aware** — based on the target filesystem's rules
+3. **Cross-environment case translation is logged** — when case is lost or ambiguous, the configuration chain records it
+4. **Case-preserving filesystems get special handling** — the original case is stored and preserved across translations
+5. **Conflict detection is automatic** — the VFS layer detects when case-insensitive filesystems might have collisions
+6. **The path library's comparison function takes a case-sensitive flag** — based on the environment type
+7. **Hash computation is context-aware** — hashes are case-sensitive or case-insensitive based on the FS
+8. **Every translation between environments carries the FS type** — the configuration stash records whether the source and target are case-sensitive
+
+---
 
 ### Cross-Platform Path Libraries (for reference)
 
