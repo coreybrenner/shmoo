@@ -388,4 +388,143 @@ How should the plugin system work?
 
 ---
 
+## 13. Obtaining Short-Name Paths in DOS/Windows Environments
+
+### The Question
+
+When executing programs in a DOS or Windows environment, we may need to obtain the 8.3 short-name path for files. This is critical for:
+- Passing paths to older executables that cannot handle long filenames
+- Interfacing with tools or scripts that expect 8.3 paths
+- Cross-environment path translation where the target FS uses 8.3 names
+
+### Methods for Obtaining Short Names
+
+#### 1. Windows API: `GetShortPathName`
+
+The primary programmatic approach is the Windows API function `GetShortPathName()`:
+
+```c
+DWORD GetShortPathName(
+  LPCTSTR lpszLongPath,   // long filename
+  LPTSTR  lpszShortPath,  // buffer for short name
+  DWORD   cchBufferLength // size of buffer
+);
+```
+
+Located in `kernel32.dll`. Called from:
+- C/C++ programs directly linked against `kernel32.dll`
+- Perl via `Inline::C` or `Win32::API` module
+- QEMU guest agent commands (`qemu-ga` supports executing arbitrary commands)
+
+The function returns the 8.3 short path for a given long path. Example:
+```
+"C:\Program Files\Shmoo\build.exe" → "C:\PROGRA~1\SHMOO~1\build.exe"
+```
+
+#### 2. Command Line: `dir /x`
+
+In a Windows command prompt or DOS shell:
+```cmd
+dir /x C:\path\to\file.txt
+```
+
+This displays both the long filename and its 8.3 short name alias. Useful for manual inspection but also callable programmatically:
+```cmd
+cmd /c "dir /x C:\path\to\file.txt"
+```
+
+Parse the output to extract the short name.
+
+#### 3. PowerShell: `Get-ShortPathName`
+
+In modern Windows (PowerShell v3+):
+```powershell
+(New-Object System.IO.FileInfo("C:\Program Files\Shmoo\build.exe")).ShortName
+# Returns: SHMOO~1.EXE
+
+(New-Object System.IO.DirectoryInfo("C:\Program Files\Shmoo")).Parent.FullName
+# Can also use: Get-Item -Force .\ShortName\Path\Here | Select-Object ShortName
+```
+
+#### 4. QEMU Guest Agent: `guest-exec`
+
+When executing commands inside a QEMU guest via the guest agent:
+```
+qemu-ga command: guest-exec "cmd.exe /c \"echo %CD%\""
+```
+
+To get the short path of the current directory inside the guest:
+```
+guest-exec "cmd.exe /c \"for %i in (.) do @echo %%~fi\""
+```
+
+Or call `GetShortPathName` directly through a custom script executed via `guest-exec`.
+
+#### 5. Wine: `winecmd` or `wineconsole`
+
+When running under Wine:
+```bash
+wine cmd /c "dir /x C:\path\to\file"
+```
+
+Or use the `winepath` utility (if available):
+```bash
+winepath -s /mnt/c/Program\ Files/Shmoo
+# Returns short path: Z:\PROGRA~1\SHMOO~1
+```
+
+### Integration with Shmoo's VFS Layer
+
+When the VFS layer translates paths from POSIX to DOS:
+
+```
+1. Receive POSIX path: /home/corey/src/shmoo
+2. Translate to DOS mount: Z:\shmoo
+3. For each file/directory in the DOS mount:
+   a. Query for 8.3 short name (via GetShortPathName API call)
+   b. Store mapping: long_path → short_path
+   c. Return short_path to caller when needed
+4. Cache the mapping to avoid repeated API calls
+```
+
+The mapping should be stored in the configuration stash:
+```
+SHMOO_STASH: {
+    short_path_cache: {
+        "Z:\\shmoo": {
+            "long": "Z:\\shmoo",
+            "short": "Z:\\SHMOO"
+        },
+        "Z:\\Program Files\\Shmoo\\build.exe": {
+            "long": "Z:\\Program Files\\Shmoo\\build.exe",
+            "short": "Z:\\PROGRA~1\\SHMOO~1\\BUILD.EXE"
+        }
+    }
+}
+```
+
+### Open Questions
+
+- Should the VFS layer automatically convert all DOS paths to short names, or only when explicitly requested?
+- How do we handle the case where 8.3 generation is disabled on the target system (NTFS can disable 8.3 generation)?
+- What is the performance impact of querying `GetShortPathName` for every file operation?
+- Should the short-path cache be stored persistently or per-session?
+- How do we handle collisions when multiple long paths resolve to the same short path?
+
+### Sources
+
+- **Microsoft Docs** — `GetShortPathName` function documentation
+  - Located in `kernel32.dll`, part of the Windows API
+- **SuperUser** — "How can I find the short path of a Windows directory/file?"
+  - [https://superuser.com/questions/348079/how-can-i-find-the-short-path-of-a-windows-directory-file](https://superuser.com/questions/348079/how-can-i-find-the-short-path-of-a-windows-directory-file)
+  - Covers `dir /x`, PowerShell, and programmatic approaches
+- **SS64.com** — Windows CMD filename syntax reference
+  - [https://ss64.com/nt/syntax-filenames.html](https://ss64.com/nt/syntax-filenames.html)
+  - Legal characters, 8.3 rules, long filename support
+- **Wikipedia** — 8.3 filename article
+  - [https://en.wikipedia.org/wiki/8.3_filename](https://en.wikipedia.org/wiki/8.3_filename)
+  - Working with short filenames in a command prompt, VFAT case preservation rules
+
+---
+
 *End of design questions document.*
