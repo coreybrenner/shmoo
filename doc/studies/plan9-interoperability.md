@@ -479,7 +479,344 @@ The **translation layer** is in the Shmoo Daemon, which acts as a **9P-to-anythi
 
 ---
 
-## 10. Conclusion
+## 10. Remote Execution: r-shell and /sys/exec
+
+### 10.1 The r-shell Mechanism
+
+Plan 9 has a tool called **`r-shell`** (or just **`rs`**) that allows you to execute commands on a remote 9P server:
+
+```bash
+# Run a command on the remote node:
+r-shell remotehost "gcc -o math math.c"
+
+# Equivalent to:
+ssh remotehost "gcc -o math math.c"
+```
+
+### 10.2 How 9P Handles Remote Execution
+
+The process works like this:
+
+1. **Client initiates 9P connection** to the remote server (just like mounting a filesystem).
+2. **Client sends a special 9P operation** (`Topen`) to the special file `/sys/exec` on the remote server.
+3. **Client `write()`s the command** (command + arguments) to the `/sys/exec` file descriptor.
+4. **Remote server forks a process** in the client's namespace.
+5. **Client `read()`s the output** from the same file descriptor — the server pipes stdout/stderr back over 9P.
+6. **Client `close()`s** the file descriptor and receives the exit status.
+
+**The key insight:** Remote execution is just a file operation over 9P. The client `open()`s the remote `/sys/exec` endpoint, `write()`s the command, and `read()`s the output. No separate protocol layer — 9P handles everything.
+
+### 10.3 The /sys/exec File
+
+Every 9P node exposes a special file called **`/sys/exec`** that serves as the remote execution endpoint. It is a **file-like interface to process execution**:
+
+```
+┌─────────────────────────────────────────────┐
+│              Client (Interceptor)            │
+│  Net::9P or lib9p                            │
+└────────┬────────────────────────────────────┘
+         │ 9P Protocol (Topen, Twrite, Tread)
+         ▼
+┌─────────────────────────────────────────────┐
+│  Remote Node 9P Server                       │
+│                                              │
+│  /sys/exec  ← Special 9P file               │
+│    ├── Topen("/sys/exec") → fd=42            │
+│    ├── Twrite(fd=42, "gcc -o math math.c")  │
+│    ├── Fork process in client namespace      │
+│    ├── Exec("gcc", args=["-o", "math", "math.c"])
+│    ├── Pipe stdout/stderr back over 9P       │
+│    ├── Tread(fd=42) → output                 │
+│    └── Tclose(fd=42) → exit status           │
+└─────────────────────────────────────────────┘
+```
+
+### 10.4 Why This Matters for Shmoo
+
+This is **exactly** the model we want for Shmoo's build system:
+
+| Shmoo Goal | Plan 9 Equivalent |
+|------------|-------------------|
+| Run build steps on remote nodes | `r-shell` sends commands over 9P |
+| Distribute builds across nodes | 9P handles the dispatch automatically |
+| Namespace-aware execution | Remote processes inherit client's namespace |
+| Remote compiler execution | `r-shell remotehost "gcc ..."  |
+| Remote file I/O | All done via 9P `Tread`/`Twrite` |
+
+### 10.5 Dispatch Model
+
+In Plan 9, the **dispatch** (distributing work across nodes) is handled by the **build system** (`mk`) using 9P as the transport layer:
+
+```mk
+# mkfile (mk build system)
+all: $O/all
+
+# The 'r-shell' tool is called by mk to distribute builds:
+O/all: C/src/main.c
+    r-shell worker1 "gcc -o $@ $<"  # Send to remote node
+    r-shell worker2 "gcc -o $@ $<"  # Send to another node
+```
+
+The build system (`mk`) is responsible for *which* node gets the work. 9P is the *transport layer* that makes it possible.
+
+### 10.6 Shmoo's Equivalent
+
+Shmoo can replicate this exact model with its Daemon/Interceptor architecture:
+
+```
+┌─────────────────────────────────────────────┐
+│          Shmoo Build Orchestrator             │
+│  (Perl, mk-compatible)                       │
+└────────┬────────────────────────────────────┘
+         │ 9P Protocol (Topen, Twrite, Tread)
+         ▼
+┌─────────────────────────────────────────────┐
+│  Build Node 9P Server (Interceptor)          │
+│                                              │
+│  /sys/exec  ← Special 9P file               │
+│    ├── Topen("/sys/exec") → fd=42            │
+│    ├── Twrite(fd=42, "gcc -o math math.c")  │
+│    ├── Fork process in client namespace      │
+│    ├── Exec("gcc", args=["-o", "math", "math.c"])
+│    ├── Pipe stdout/stderr back over 9P       │
+│    ├── Tread(fd=42) → output                 │
+│    └── Tclose(fd=42) → exit status           │
+│                                              │
+│  / → Shmoo VFS (mounted via 9P)              │
+│    /SRC: → Project sources (virtual)         │
+│    /OBJ: → Build artifacts (virtual)         │
+│    /SYS: → System headers (virtual)          │
+└─────────────────────────────────────────────┘
+```
+
+The build orchestrator calls `Topen("/sys/exec")` on each node, writes the build command, and reads the output. The VFS is mounted separately via 9P, so the remote process has access to the same namespace as the client.
+
+---
+
+## 11. mk Emulation and Shmoo Interoperability
+
+### 11.1 The Vision: mk × Shmoo
+
+The goal is **bidirectional interoperability**:
+
+1. **mk can use Shmoo nodes** — Plan 9's `mk` build system can dispatch build steps to Shmoo nodes (which speak 9P natively).
+2. **Shmoo can emulate mk** — Shmoo can parse and execute `mk` rules (`mkfile`/`Makefile`) directly, making it a drop-in replacement for `mk`.
+3. **Shmoo can participate in mk builds** — A Shmoo node can join an existing `mk` build as a remote worker, using 9P for communication.
+
+This would make Shmoo **fully compatible with the Plan 9 ecosystem** while adding its own VFS-aware capabilities.
+
+### 11.2 mk Rule Format
+
+`mk` uses a simple, declarative rule format that is easy to parse and emulate:
+
+```mk
+# mkfile (Plan 9 build rules)
+all: math
+
+math: math.c math.h
+    gcc -o math math.c
+
+%.o: %.c
+    gcc -c -o $@ $<
+```
+
+Key features:
+- **Target:** `target: dependencies`
+- **Command:** Indented line with the shell command to execute
+- **Pattern rules:** `%.o: %.c` — automatic dependency matching
+- **Variables:** `$@` (target), `$<` (first dependency), `$^` (all dependencies)
+- **Implicit rules:** Built-in rules for `.c`, `.s`, `.o`, etc.
+
+### 11.3 Shmoo mk-Emulator
+
+Shmoo can include a **mk-compatible rule parser** that understands `mkfile` and executes the rules using Shmoo's VFS capabilities:
+
+```perl
+# /root/shmoo/lib/Shmoo/mk/Emulator.pm
+
+package Shmoo::mk::Emulator;
+use strict;
+use warnings;
+
+sub parse_mkfile {
+    my ($class, $file) = @_;
+    my $rules = [];
+    my $current_target = undef;
+
+    open(my $fh, '<', $file) or die "Cannot open mkfile: $!";
+    while (my $line = <$fh>) {
+        chomp $line;
+
+        # Blank line or comment — reset current target
+        if ($line =~ /^\s*$/ || $line =~ /^\s*\#/) {
+            $current_target = undef;
+            next;
+        }
+
+        # Rule definition: target: dependencies
+        if ($line =~ /^([^\t]+):\s*(.*)$/) {
+            $current_target = { target => $1, deps => [split(/\s+/, $2)] };
+            push @$rules, $current_target;
+            next;
+        }
+
+        # Command line (indented with tab)
+        if ($line =~ /^\t(.*)$/ && $current_target) {
+            $current_target->{commands} //= [];
+            push @{$current_target->{commands}}, $1;
+        }
+    }
+
+    return $rules;
+}
+
+sub execute {
+    my ($class, $rules, $target) = @_;
+
+    for my $rule (@$rules) {
+        if ($rule->{target} eq $target) {
+            # Execute commands
+            for my $cmd (@{$rule->{commands}}) {
+                # Expand variables ($@, $<, $^)
+                $cmd =~ s/\$@/$rule->{target}/g;
+                $cmd =~ s/\$<\b/$rule->{deps}[0]/g;
+                $cmd =~ s/\$\^\b/ join(" ", @{$rule->{deps}}) /ge;
+
+                # Execute the command via Shmoo's VFS
+                my $result = Shmoo::VFS::run_command($cmd);
+
+                if ($result->{exit_code} != 0) {
+                    die "Command failed: $cmd (exit code $result->{exit_code})\n";
+                }
+            }
+            return { success => 1 };
+        }
+    }
+
+    die "No rule for target: $target\n";
+}
+
+sub run_build {
+    my ($class, $mkfile, $target) = @_;
+
+    my $rules = $class->parse_mkfile($mkfile);
+
+    for my $rule (@$rules) {
+        if ($rule->{target} eq $target) {
+            # Check dependencies
+            for my $dep (@{$rule->{deps}}) {
+                if (!-e $dep) {
+                    $class->execute($rules, $dep);  # Build dependency first
+                }
+            }
+            # Execute target
+            return $class->execute($rules, $target);
+        }
+    }
+}
+```
+
+### 11.4 Shmoo Participating in mk Builds
+
+A Shmoo node can act as a **remote worker** for an existing `mk` build by exposing a 9P server with `/sys/exec` support:
+
+```bash
+# On a Shmoo node (any platform):
+
+# Start the Shmoo Daemon with mk-remote mode
+shmoo-daemon --mode=mk-worker --bind tcp:0.0.0.0:5640
+
+# Now the node is available to mk builds:
+# On the build orchestrator (Plan 9 or other):
+mkfile: C/src/main.c
+    r-shell shmoo-node "gcc -o $@ $<"  # Dispatch to Shmoo node via 9P
+
+# The Shmoo node:
+# 1. Receives the command via 9P (Twrite on /sys/exec)
+# 2. Forks a process with Shmoo's VFS namespace
+# 3. Executes the command (gcc)
+# 4. Pipes output back to the orchestrator via 9P (Tread)
+# 5. Returns exit status
+```
+
+The Shmoo node can also **enhance mk's capabilities** by providing:
+- **VFS-aware compilation** — The remote gcc can access Shmoo's virtual directories (`/SRC:`, `/OBJ:`)
+- **Remote caching** — Build artifacts can be cached across nodes via the Shmoo Daemon
+- **Namespace isolation** — Each build runs in its own isolated namespace
+
+### 11.5 mkfile → Shmoo Rule Translation
+
+Shmoo can also translate `mkfile` rules into its own build format, making it easy to migrate:
+
+```mk
+# Original mkfile (Plan 9)
+all: math
+
+math: math.c math.h
+    gcc -o math math.c
+
+%.o: %.c
+    gcc -c -o $@ $<
+```
+
+```mk
+# Translated to Shmoo (mk-compatible)
+all: VFS:OBJ:math
+
+VFS:OBJ:math: VFS:SRC:math.c VFS:SRC:math.h
+    gcc -o VFS:OBJ:math VFS:SRC:math.c VFS:SRC:math.h
+
+%.o: %.c
+    gcc -c -o VFS:OBJ:$*.o VFS:SRC:$*.c
+
+# Shmoo adds VFS-aware dependencies automatically
+```
+
+### 11.6 Benefits of Bidirectional Interoperability
+
+| Benefit | Description |
+|---------|-------------|
+| **Drop-in replacement** | Shmoo can replace `mk` on Plan 9 without changing `mkfile` rules |
+| **New capabilities** | Shmoo adds VFS awareness to existing `mk` builds |
+| **Remote workers** | `mk` builds can dispatch to Shmoo nodes anywhere |
+| **Cross-platform** | Shmoo nodes can run on Linux, macOS, Windows, Plan 9 |
+| **Community bridge** | Plan 9 builders discover Shmoo through `mk` compatibility |
+| **Preservation** | Plan 9's build system lives on in Shmoo |
+
+### 11.7 Implementation Priority
+
+| Priority | Task | Effort |
+|----------|------|--------|
+| **P0** | mk-compatible rule parser in Perl | Medium (3-5 days) |
+| **P1** | Expose `/sys/exec` on Shmoo Daemon for `r-shell` | Medium (3-5 days) |
+| **P2** | mkfile → Shmoo rule translator | Small (1-2 days) |
+| **P3** | Shmoo node as `mk` remote worker | Medium (2-3 days) |
+| **P4** | Full `mk` emulation with implicit rules | Large (1-2 weeks) |
+
+### 11.8 Example: mk Build with Shmoo Nodes
+
+```bash
+# Plan 9 build orchestrator (9front):
+
+# Start a Shmoo node on a Linux build server
+ssh build1 "shmoo-daemon --mode=mk-worker --bind tcp:0.0.0.0:5640"
+
+# Now the orchestrator can dispatch to the Shmoo node:
+mkfile:
+    r-shell build1 "gcc -o math math.c"  # Runs on Linux, uses Shmoo VFS
+    r-shell build2 "gcc -o test test.c"  # Runs on another node
+
+# The Shmoo node:
+# 1. Receives "gcc -o math math.c" via 9P
+# 2. Forks process with Shmoo's VFS namespace (SRC:, OBJ:, etc.)
+# 3. Executes gcc on the Linux node
+# 4. Pipes output back to the orchestrator
+# 5. Returns exit status
+```
+
+---
+
+## 13. Conclusion
 
 Plan 9 interoperability is not just "cool" — it is a **strategic advantage** for Shmoo. The 9P protocol is the best filesystem protocol in existence, Plan 9's design philosophy is elegant and proven, and Perl's native support on 9front makes the integration seamless.
 
