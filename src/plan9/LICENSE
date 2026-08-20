@@ -1,0 +1,6 @@
+Sources from Plan 9 from User Space (plan9port)
+Licensed under Public Domain (or equivalent) by 9fans
+See https://9fans.github.io/plan9port/ for details
+
+This code is included as a vendor dependency for Shmoo's
+9P protocol support and Plan 9 utility integration.
