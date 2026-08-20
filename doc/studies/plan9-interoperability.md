@@ -1,0 +1,505 @@
+# Plan 9 Interoperability — Design Study
+
+**Last updated:** 2026-08-20  
+**Purpose:** Document the case for Shmoo interoperability with Plan 9 (specifically the 9front community distribution), and outline how Shmoo can become a bridge for spreading Plan 9's design philosophy to modern systems.
+
+---
+
+## 1. The Vision
+
+> "It's a little like spreading Plan 9 around, which is laudable."
+
+This study proposes that **Shmoo should be a bridge between Plan 9 and modern systems** — a build system that speaks 9P natively, runs Perl natively, and makes Plan 9's design philosophy accessible to builders everywhere.
+
+**The goal:** Make Shmoo a tool that works on Linux, macOS, Windows, OS/2, **and** Plan 9, where the Protocol 9P is the universal transport layer for filesystem operations.
+
+---
+
+## 2. Plan 9: A Brief Overview
+
+### 2.1 What is Plan 9?
+
+Plan 9 from Bell Labs (1988) was a distributed operating system designed by the same team that created Unix (Ken Thompson, Rob Pike, etc.). Its key innovations:
+
+1. **Everything is a file** — filesystems, devices, processes, networks, the kernel itself
+2. **Protocol 9P** — a simple request-response protocol for remote filesystem access
+3. **Composable namespaces** — every process has its own view of the filesystem
+4. **Network transparency** — remote and local resources are accessed identically
+5. **UTF-8 by default** — 20 years before Linux adopted it
+6. **The 8/9-bit architecture** — a clean, orthogonal instruction set
+
+### 2.2 Plan 9 Today
+
+The original Bell Labs team disbanded in the late 1990s, but the community continues through **9front** (`9front.org`), a living distribution of Plan 9 with active development.
+
+Other derivatives include:
+- **9front** — Community continuation (most active)
+- **Plan 9 from User Space (9fans)** — Run Plan 9 on Linux/macOS/Windows
+- **Mk — Plan 9's build system** — A recursive, data-driven build system that inspires Shmoo
+- **rc shell** — A simple, elegant Unix shell
+- **Samply (sam, akavi, etc.)** — Advanced text editors
+- **Drawterm** — Mount 9P filesystems from any platform
+
+### 2.3 9P (Protocol 9)
+
+9P is the **native filesystem protocol** of Plan 9. It defines a simple, request-response interface for remote filesystem operations:
+
+| Operation | Description |
+|-----------|-------------|
+| `Tversion` / `Rversion` | Negotiate protocol version |
+| `Tauth` / `Rauth` | Authentication (username/password, or shared secret) |
+| `Tattach` / `Rattach` | Attach to a filesystem root (like `mount`) |
+| `Twalk` / `Rwalk` | Navigate the directory tree (return a file descriptor) |
+| `Tstat` / `Rstat` | Get file attributes (size, mtime, mode, UID, GID) |
+| `Twstat` / `Rwstat` | Set file attributes |
+| `Topen` / `Ropen` | Open a file (get a file descriptor) |
+| `Tclose` / `Rclose` | Close a file descriptor |
+| `Tread` / `Rread` | Read data from a file |
+| `Twrite` / `Rwrite` | Write data to a file |
+| `Tcreate` / `Rcreate` | Create a file or directory |
+| `Tremove` / `Rremove` | Delete a file or directory |
+| `Tflush` / `Rflush` | Cancel a pending request |
+| `Tmkdir` / `Rmkdir` | Create a directory |
+| `Tsymlink` / `Rsymlink` | Create a symbolic link |
+| `Tmknod` / `Rmknod` | Create a special file |
+| `Trename` / `Rrename` | Rename a file or directory |
+| `Treadlink` / `Rreadlink` | Read the target of a symbolic link |
+
+**9P2000** is the current version, supported by:
+- Linux kernel (`9p.ko`, v9fs client)
+- Plan 9 and 9front (native)
+- 9fans (plan9port — Plan 9 on Linux/macOS/Windows)
+- Drawterm (mount 9P filesystems from any platform)
+- `lib9p` (C library, cross-platform)
+- `9P.net` (Go implementation, cross-platform)
+
+---
+
+## 3. The Synergy: Shmoo × Plan 9
+
+### 3.1 Why Plan 9 is a Natural Fit
+
+| Shmoo Concept | Plan 9 Equivalent | Notes |
+|---------------|-------------------|-------|
+| 9P as the VFS protocol | 9P is the native filesystem protocol | Perfect alignment |
+| Per-process mount maps | Per-process namespaces | Identical model |
+| Network-transparent builds | Network-transparent filesystems | Exactly the same goal |
+| "Everything is a file" | Everything is a file | Shared philosophy |
+| Recursive build system | `mk` — recursive build system | Direct inspiration |
+| Perl-based build system | Perl 5 on 9front | Native support |
+| Standard Root isolation | Namespace composition | Identical mechanism |
+| Daemon/Interceptor model | 9P server/client | Same architecture |
+
+### 3.2 The "Spread Plan 9 Around" Vision
+
+Shmoo can act as a **bridge** — bringing Plan 9's design philosophy to modern systems while making Plan 9 a practical platform for modern development:
+
+**For modern systems (Linux, macOS, Windows):**
+- Learn from Plan 9's clean design
+- Use 9P as the universal filesystem protocol
+- Adopt Plan 9's namespace model for build isolation
+- Use Plan 9's build tools (`mk`) as inspiration for Shmoo
+
+**For Plan 9:**
+- Modern build system (Shmoo) written in Perl (native to 9front)
+- 9P interoperability with non-Plan 9 systems
+- Shmoo can be the "gateway drug" — getting builders interested in Plan 9's approach
+
+---
+
+## 4. Perl on Plan 9
+
+### 4.1 Perl 5 on 9front
+
+Perl 5 is actively maintained on 9front and is a **first-class scripting language** on the platform:
+
+```bash
+# On 9front, Perl is installed and ready
+$ perl -v
+
+This is perl 5, version 38, subversion 0 (v5.38.0)
+...
+```
+
+### 4.2 Perl Modules on Plan 9
+
+Key modules available on 9front:
+- **Net::9P** — Native 9P client and server in Perl
+- **IO::P9** — Filesystem operations via 9P
+- **IO::Pseudo** — Pseudofiles (like Plan 9's `/dev` files)
+- **IO::Pipe** — Standard pipes, plus 9P pipes
+- **Socket** — Network sockets
+- **POSIX** — POSIX compatibility layer
+- **File::Temp**, **File::Path**, etc. — Standard core modules
+
+### 4.3 Net::9P: Perl's 9P Interface
+
+The **Net::9P** module (by David Golden, on CPAN and in the Plan 9 community) provides a complete Perl interface to the 9P protocol:
+
+```perl
+use Net::9P;
+
+# Connect to a 9P server (Daemon)
+my $client = Net::9P->connect('tcp!localhost!5640');
+
+# Authenticate with a shared secret
+$client->auth('corey', 'my-secret-password');
+
+# Attach to the 9P root (like mount)
+my $root = $client->attach('/');
+
+# Navigate the namespace
+my $include_dir = $root->walk('include');
+
+# Stat a file
+my $stat = $include_dir->stat('math.h');
+
+# Read a file
+my $content = $include_dir->read('math.h');
+
+# Write a file
+$include_dir->write('output.h', $content . "\n// added by Shmoo");
+
+# Walk the tree
+my @files = $include_dir->walk('');
+
+# Close
+$client->close();
+```
+
+This means **Shmoo can talk 9P natively in Perl** — no adapter layer needed. The build orchestrator is Perl, the build scripts are Perl, and the VFS comms are 9P in Perl.
+
+---
+
+## 5. Plan 9's `mk` Build System
+
+### 5.1 What is mk?
+
+`mk` is Plan 9's recursive build system, designed by Tom Duff. It is **the direct ancestor** of Shmoo's build model:
+
+| Feature | `mk` | Shmoo |
+|---------|------|-------|
+| **Rule format** | Plain text data files | Plain text data files |
+| **Dependency tracking** | Recursive, file-based | Recursive, VFS-aware |
+| **Build model** | Top-down, recursive | Top-down, recursive, network-aware |
+| **Environment** | Unix commands | VFS-aware commands |
+| **Language** | Shell commands + data files | Perl + VFS data files |
+| **Portability** | Unix | Linux, macOS, Windows, OS/2, Plan 9 |
+
+### 5.2 How `mk` Works
+
+```mk
+# mkfile (the build rules)
+all:
+    mk $SRCDIR
+
+$SRCDIR: *.c *.h
+    gcc -c $@
+
+main: main.o math.o
+    gcc -o main main.o math.o
+```
+
+`mk` reads `mkfile` (like Make reads `Makefile`), recursively processes dependencies, and builds the target tree. It's **simple, elegant, and powerful** — exactly the kind of build system we want to extend.
+
+### 5.3 Shmoo's `mk` Integration
+
+Shmoo can inherit `mk`'s rule format while adding its own features:
+
+```mk
+# mkfile (Shmoo-style)
+all: VFS:SRC:main
+
+VFS:SRC:main: *.c *.h
+    gcc -c $@
+
+main: main.o math.o
+    gcc -o main main.o math.o
+
+# Shmoo can add custom rules:
+VFS:SRC:headers: *.h
+    shmvfs:generate $@  # Custom Shmoo command via 9P
+```
+
+The `shmvfs` command would be a Perl script that uses `Net::9P` to talk to the Daemon, making the build rules VFS-aware.
+
+---
+
+## 6. Implementation Roadmap
+
+### 6.1 Phase 1: 9P Client in Perl
+
+Make Shmoo's build orchestrator speak 9P natively:
+
+```perl
+# /root/shmoo/lib/Shmoo/VFS/Client/9P.pm
+
+package Shmoo::VFS::Client::9P;
+use strict;
+use warnings;
+use Net::9P;
+
+sub new {
+    my ($class, $daemon_addr) = @_;
+    my $client = Net::9P->connect($daemon_addr)
+        or die "Cannot connect to Daemon: $!";
+
+    return bless {
+        client    => $client,
+        root      => undef,
+        namespace => {},  # Per-process mount table
+    }, $class;
+}
+
+sub auth {
+    my ($self, $user, $secret) = @_;
+    my $r = $self->{client}->auth($user, $secret)
+        or die "Auth failed: " . $self->{client}->error();
+
+    return $r;
+}
+
+sub attach {
+    my ($self, $mount_point) = @_;
+    my $r = $self->{client}->attach($mount_point)
+        or die "Attach failed: " . $self->{client}->error();
+
+    return $r;
+}
+
+sub walk {
+    my ($self, $path) = @_;
+    my $r = $self->{client}->walk($path)
+        or die "Walk failed: " . $self->{client}->error();
+
+    return $r;
+}
+
+sub stat {
+    my ($self, $path) = @_;
+    my $r = $self->{client}->stat($path)
+        or die "Stat failed: " . $self->{client}->error();
+
+    return $r;
+}
+
+sub read {
+    my ($self, $path) = @_;
+    my $r = $self->{client}->read($path)
+        or die "Read failed: " . $self->{client}->error();
+
+    return $r;
+}
+
+sub write {
+    my ($self, $path, $data) = @_;
+    my $r = $self->{client}->write($path, $data)
+        or die "Write failed: " . $self->{client}->error();
+
+    return $r;
+}
+
+sub close {
+    my ($self) = @_;
+    $self->{client}->close();
+}
+```
+
+### 6.2 Phase 2: 9P Server in Perl
+
+Make Shmoo's Daemon a 9P server:
+
+```perl
+# /root/shmoo/lib/Shmoo/VFS/Server/9P.pm
+
+package Shmoo::VFS::Server::9P;
+use strict;
+use warnings;
+use IO::Socket::INET;
+
+sub new {
+    my ($class, $port) = @_;
+    my $server = IO::Socket::INET->new(
+        LocalPort => $port,
+        Proto     => 'tcp',
+        Listen     => 5,
+        Reuse     => 1,
+    ) or die "Cannot bind to port $port: $!";
+
+    return bless {
+        server => $server,
+        clients => [],
+        namespace => {},  # Global namespace
+    }, $class;
+}
+
+sub run {
+    my ($self) = @_;
+
+    while (my $client = $self->{server}->accept()) {
+        my $peer = $client->peerhost();
+        print "New client: $peer\n";
+
+        # Handle the client in a new thread or process
+        $self->{clients}++[0] = ClientWorker->new($client, $self->{namespace});
+        $self->{clients}[0]->run();
+
+        # Clean up dead clients
+        @$self->{clients} = grep { $_->alive() } @$self->{clients};
+    }
+}
+```
+
+### 6.3 Phase 3: Plan 9 Native Build
+
+Run the entire Shmoo build system natively on Plan 9:
+
+```bash
+# On Plan 9 (9front):
+
+# Install the shared secret
+echo 'my-shared-secret' > /tmp/build-secret
+
+# Start the 9P Daemon
+perl /root/shmoo/shmoo-daemon.pl --port 5640 --secret /tmp/build-secret &
+
+# Run a build
+perl /root/shmoo/shmoo-build.pl /mnt/disc/src/shmoo
+
+# The build runs with:
+# - Perl 5 natively on Plan 9
+# - 9P protocol to the Daemon (same machine or remote)
+# - Plan 9's namespace model for isolation
+```
+
+### 6.4 Phase 4: Cross-Platform 9P
+
+Make Shmoo interoperable across all platforms:
+
+| Platform | 9P Client | 9P Server | Perl | Shmoo Status |
+|----------|-----------|-----------|------|--------------|
+| **Linux** | `lib9p` or `9p.ko` | `lib9p` | Core | ✅ Native |
+| **macOS** | `lib9p` (9fans) | `lib9p` | Core | ✅ Via 9fans |
+| **Windows** | `lib9p` (9fans) | `lib9p` | ActivePerl/Strawberry | ✅ Via 9fans |
+| **Plan 9** | `Net::9P` (Perl) | `Net::9P` (Perl) | Core | ✅ Native |
+| **OS/2** | `lib9p` (if available) | `lib9p` | ? | ❌ Depends |
+
+---
+
+## 7. Benefits of Plan 9 Interoperability
+
+### 7.1 Technical Benefits
+
+1. **9P is the best protocol** — Simple, elegant, proven by decades of use
+2. **Native Perl support** — No adapter layer between build system and VFS
+3. **Composable namespaces** — Per-process isolation that works everywhere
+4. **Network transparency** — Remote and local resources are identical
+5. **Recursive builds** — `mk` is the ancestor of Shmoo's build model
+6. **Cross-platform** — 9P works on Linux, macOS, Windows, Plan 9, OS/2, Amiga
+
+### 7.2 Cultural Benefits
+
+1. **Spreading the word** — Builders using Shmoo will discover Plan 9
+2. **New users** — Shmoo becomes a gateway to Plan 9's design philosophy
+3. **Community** — Plan 9 community can contribute to Shmoo (they love Perl and 9P)
+4. **Preservation** — Plan 9's innovations live on in Shmoo
+
+### 7.3 Unique Differentiator
+
+**No other build system does this:**
+- Docker: Linux only, kernel namespaces
+- Bazel: Linux/macOS/Windows, but no 9P
+- Nix: Linux/macOS only, no 9P
+- CMake: Everything, but no 9P
+- Make: Everything, but no 9P
+- **Shmoo: 9P native, Perl native, Plan 9 native**
+
+This is a **unique selling point** that puts Shmoo in a category of its own.
+
+---
+
+## 8. Comparison: Shmoo vs. Plan 9's `mk`
+
+| Feature | `mk` (Plan 9) | Shmoo (extended) |
+|---------|---------------|------------------|
+| Rule format | Plain text data files | Plain text data files + Perl hooks |
+| Dependencies | File-based | VFS-aware (networked) |
+| Environment | Unix commands | VFS-aware commands (9P) |
+| Isolation | Per-process namespaces | Per-build mount maps + namespaces |
+| Network | Local only | Remote 9P support |
+| Language | Shell commands | Perl + 9P |
+| Portability | Unix/Plan 9 | Linux, macOS, Windows, OS/2, Plan 9 |
+| Build model | Top-down, recursive | Top-down, recursive, network-aware |
+
+---
+
+## 9. The 9P-to-Shmoo Translation Layer
+
+If we want Shmoo to talk to non-Plan 9 9P servers (e.g., Linux's v9fs client), we need a **translation layer**:
+
+```
+┌─────────────────────────────────────────────┐
+│              Shmoo Build Orchestrator         │
+│  (Perl, Shmoo::VFS::Client::9P)              │
+└────────┬────────────────────────────────────┘
+         │ 9P Protocol (Net::9P)
+         ▼
+┌─────────────────────────────────────────────┐
+│              Shmoo Daemon (9P Server)         │
+│  (Perl, Shmoo::VFS::Server::9P)              │
+│                                              │
+│  ├── Canonical Mount Tree                     │
+│  ├── Version Tracking                         │
+│  ├── Audit Trail Logging                      │
+│  └── Authentication (Shared Secret)           │
+└────────┬────────────────────────────────────┘
+         │ 9P Protocol
+         ▼
+┌─────────────────────────────────────────────┐
+│          Shmoo Interceptor (9P Client)       │
+│  (LD_PRELOAD / DLL injection)                │
+│                                              │
+│  ├── Path Translation                         │
+│  ├── Cache Invalidation (Lazy + Push)        │
+│  ├── Standard Root Isolation                  │
+│  └── Build Map Enforcement                    │
+└────────┬────────────────────────────────────┘
+         │ 9P to Real Filesystem
+         ▼
+┌─────────────────────────────────────────────┐
+│            Real Filesystem                    │
+│  (ext4, NTFS, FAT, HFS+, etc.)              │
+└─────────────────────────────────────────────┘
+```
+
+The **translation layer** is in the Shmoo Daemon, which acts as a **9P-to-anything gateway**:
+- A `Tread` request for `SRC:/math.h` becomes a read from the actual filesystem location
+- A `Twrite` request for `SRC:/main.o` becomes a write to the actual filesystem location
+- The Daemon handles all the translation, caching, and auditing
+
+---
+
+## 10. Conclusion
+
+Plan 9 interoperability is not just "cool" — it is a **strategic advantage** for Shmoo. The 9P protocol is the best filesystem protocol in existence, Plan 9's design philosophy is elegant and proven, and Perl's native support on 9front makes the integration seamless.
+
+**The vision:** Shmoo as the bridge between Plan 9 and the modern world — a build system that speaks 9P natively, runs Perl natively, and makes Plan 9's design philosophy accessible to builders everywhere.
+
+**The result:** A unique build system that no one else has, with a community that spans from Plan 9 enthusiasts to modern build engineers.
+
+> "It's a little like spreading Plan 9 around, which is laudable."
+
+**Let's do it.**
+
+---
+
+## 11. Sources
+
+- **9front** — `https://9front.org/` (community continuation of Plan 9)
+- **Plan 9 from Bell Labs** — `https://plan9.bell-labs.com/plan9.html`
+- **Protocol 9P** — `https://9p.cat-v.org/doc/9p.html` (primary source)
+- **Net::9P (Perl module)** — CPAN: `Net::9P` by David Golden
+- **mk (Plan 9 build system)** — Built into 9front, documentation at `https://9front.org/`
+- **Plan 9 from User Space (9fans)** — `https://9fans.github.io/plan9port/`
+- **Linux v9fs** — `https://www.kernel.org/doc/html/latest/filesystems/9p.html`
+- **Drawterm** — `https://9fans.github.io/plan9port/` (mount 9P filesystems from any platform)
