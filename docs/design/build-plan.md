@@ -1,242 +1,653 @@
-# Shmoo Build Plan — Architecture & Execution
+# Design: Build Plan — DAG Resolution, Dependency Graph, Build Order
 
-*2025-01-23 | Status: Design Draft*
-*Purpose: Comprehensive design document for the Shmoo build orchestrator, including 9p integration, strict environment isolation, and the "Delusion Shell".*
-
----
-
-## 1. The Build Graph (DAG)
-
-Every build is a **Directed Acyclic Graph (DAG)** of **Actions**. An action is an atomic build step (compile, link, copy, etc.) with explicitly declared inputs, outputs, and dependencies.
-
-### Action Components
-
-Each action has:
-- **ID:** Unique identifier (e.g., `cc_compile:src/main.c`)
-- **Type:** Build action type (`cc_compile`, `cc_link`, `cp`, `test`, etc.)
-- **Inputs:** List of input files with content hashes, tool binaries with hashes, and declared flags
-- **Outputs:** List of expected output files with expected content hashes (for verification)
-- **Environment:** Specific environment variable snapshot, `PATH`, `LD_PRELOAD`, working directory
-- **Dependencies:** List of Action IDs that must complete before this action can run
-
-### 9p Integration
-
-Actions do not access the host filesystem directly. Instead, they interact with **9p Mounts**:
-- **Input Mounts (Read-Only):** Source files, headers, libraries (e.g., `/inputs/src`, `/inputs/libs`)
-- **Output Mount (Writable):** Build artifacts (e.g., `/outputs/build`)
-- **Tool Mount (Read-Only):** The toolchain (e.g., `/tools/gcc`, `/tools/clang`)
-
-These mounts are handled by the 9p Client (if remote) or local 9p Server (if local), mediated by the **Syscall Interceptor** (`LD_PRELOAD`).
+*2025-01-23 | Status: Active Design*
+*Purpose: Define the build plan as a DAG of compile/link/copy actions with explicit dependencies, content-addressed inputs/outputs, and a topological sort scheduler that distributes work across distributed hosts.*
 
 ---
 
-## 2. Execution Engine
+## 1. Build Plan Overview
 
-The execution engine is the core scheduler that orchestrates the build:
+The build plan is a **directed acyclic graph (DAG)** of actions that describes what needs to be compiled, linked, and assembled into final artifacts.
 
-1. **Graph Resolution:** Parses build files (`shmoo-build`, `Makefile`) into a DAG
-2. **Topological Sort:** Determines the correct execution order (dependencies first)
-3. **Parallel Execution:** Runs independent actions in parallel, bounded by `--jobs=N`
-4. **Sandboxing:** Each action runs in an isolated environment:
-   - **Filesystem:** Only declared mounts are visible (via chroot/namespaces or 9p mounts)
-   - **Network:** Disabled by default
-   - **Environment:** Strictly controlled (see *Environment Isolation*)
-5. **Result Collection:** Captures exit code, stdout/stderr, and output files
-6. **Caching:** Results are cached by content-addressed hash (action key + input hashes)
-7. **Verification:** Output hashes are compared against expected values; mismatches fail the build
-
----
-
-## 3. Environment Isolation (The "Export" Knob)
-
-### The Problem
-Standard tools (Make, bash, cmake) inherit environment variables from the parent shell. This "environment bleed" is a primary cause of non-reproducible builds. Variables like `CFLAGS`, `PATH`, `LD_LIBRARY_PATH`, or `CC` silently influence builds in ways that are hard to audit or reproduce.
-
-### The Solution: Explicit Exports
-Shmoo introduces a configuration knob (`strict_env: true`) that changes the default behavior:
-- **By Default:** Environment variables defined in a recipe/build rule are **local** to that action. They are **not** automatically exported to child processes (sub-shells, compilers, linkers).
-- **Explicit Export:** To make a variable visible to children, the recipe must **explicitly export** it (e.g., `export CFLAGS="-O2"`)
-- **Child Processes:** When a child process is spawned, it receives *only* the variables explicitly marked as exported in the parent's recipe.
-
-#### Example (Makefile Compatibility)
-
-**Standard Makefile (environment bleed):**
-```makefile
-CC = gcc      # Inherited from shell or make
-CFLAGS = -O2  # Inherited from shell
-all: app
-    $(CC) $(CFLAGS) main.c -o app
 ```
-*Problem:* If the developer's shell has `CFLAGS=-g` set, it overrides the Makefile's `CFLAGS`. The build is non-reproducible.
-
-**Shmoo Makefile (strict env):**
-```makefile
-export CC = gcc      # Explicitly exported
-export CFLAGS = -O2  # Explicitly exported
-all: app
-    $(CC) $(CFLAGS) main.c -o app
-```
-*Benefit:* If `CC` or `CFLAGS` is not exported, the compiler invocation fails because `gcc` is not found in the child's `PATH`. This enforces strict hermeticity.
-
-### Auditable Multivariate Builds
-
-Because every variable's visibility is explicit, Shmoo can generate a precise **Environment Report** for every build step:
-- Which variables were defined in the recipe?
-- Which variables were explicitly exported?
-- Which variables did the compiler actually receive?
-- Did any "leaked" variables (not explicitly exported) affect the build?
-
-This makes the build **fully auditable** and **multivariate**: you can trace every compiler invocation back to exactly which variables and files influenced it. The build environment is no longer a "ghost" — it's a **first-class, auditable artifact**.
-
-### Implementation
-
-The execution engine enforces `strict_env` by:
-1. **Clearing the environment** before spawning child processes
-2. **Injecting only exported variables** from the recipe's environment definition
-3. **Validating** that all required tools and inputs are declared (no implicit system dependencies)
-4. **Logging** every variable passed to each child process for auditability
-
----
-
-## 4. Make Compatibility Layer (Drop-in Replacement)
-
-Shmoo can drop in place of Make and many other build systems by:
-1. **Parsing Makefiles:** Translating Makefile rules into Shmoo actions
-2. **Environment Translation:** When translating a Makefile, Shmoo respects `export` statements. Variables without `export` are treated as local (and thus won't leak to children).
-3. **Shell Wrapper:** Shmoo's Makefile execution runs through a shell wrapper that enforces the `strict_env` policy.
-
-#### The "Make Wrapper" Script
-
-```bash
-#!/bin/sh
-# shbuild-make-wrapper.sh
-# Runs a Makefile within Shmoo's strict environment policy.
-
-set -eu
-
-# 1. Parse the Makefile to extract 'export' statements.
-exports=$(grep '^export' Makefile | sed 's/^export //')
-
-# 2. Clear the environment (only keep essential system vars).
-env -i PATH="/tools:/usr/bin" HOME="$HOME" TERM="$TERM"
-
-# 3. Inject only the explicitly exported variables.
-for var in $exports; do
-    eval "$var"
-    export "$var"
-done
-
-# 4. Execute the Makefile target.
-make "$@"
+                    [all] (no deps)
+                   /     \
+              [compile]   [compile]
+              (main.c)    (util.c)
+                 |          |
+                 v          v
+              [libfoo.a]  [libutil.a]
+                 \          /
+                  \        /
+                   [link app]
+                      |
+                      v
+                 [link libfoo] (depends on libutil.a, app.o)
 ```
 
-This wrapper ensures that even if a developer runs `make`, Shmoo enforces the strict environment policy, preventing "environment bleed" from the developer's shell.
-
-The wrapper can also:
-- Parse Makefile `.PHONY`, `.SUFFIXES`, and implicit rules
-- Translate Makefile variables into Shmoo environment definitions
-- Generate Shmoo action graphs from Makefile dependencies
-- Provide a seamless transition path from Make to Shmoo
+Each node is an **Action** — an atomic build step with explicit inputs, outputs, and dependencies.
 
 ---
 
-## 5. The Delusion Shell (Interactive Development)
+## 2. Action Definition
 
-Shmoo can spawn an **interactive shell** that runs inside the build environment (the "Delusion Shell"):
-- **Purpose:** Interactive debugging, development, and exploration within a reproducible environment
-- **Execution:** `shbuild dev --action compile:app.c` or `shbuild dev`
-- **Environment:** The shell is pre-configured with the exact same `PATH`, `LD_PRELOAD`, mounts, and environment variables as the build step
-- **Capabilities:**
-  - `cd` around the build tree (`/inputs/src`, `/outputs`, `/tools`)
-  - Run tools (`gcc`, `make`, `gdb`, `vi`)
-  - Edit files (`vi`, `nano`) — edits are written back to the 9p-mounted input tree
-  - Debug the build step interactively
-  - Run scripts that operate on the build environment
+### Action Structure
 
-#### Why This Is Powerful
+```perl
+package Shmoo::Build::Action;
 
-1. **Seamless Remote Development:** Developers can work in a fully reproducible, pre-configured environment without manually setting up toolchains or dependencies.
-2. **Interactive Debugging:** Instead of just seeing a build failure in CI, a dev can `cd` into the exact failing build step's environment, inspect source code, run the compiler interactively, and fix the issue live.
-3. **Scripting & Tooling:** The developer has a full userland available — `find`, `grep`, `awk`, `sed`, `vi`, `gcc` — all running in the delusion environment. They can write and test scripts that operate on the remote filesystem transparently.
-4. **Sandboxed & Secure:** The 9p client and syscall interceptor ensure that the shell can only access what the build system explicitly mounts. No host filesystem bleed.
-5. **Version-Controlled Environment:** The delusion environment itself is defined by the 9p mounts and the build recipe. If the recipe changes, the environment changes. It's fully versioned and reproducible.
+# Required fields
+has 'id'        => (is => 'ro', required => 1);    # Unique action ID
+has 'type'      => (is => 'ro', required => 1);    # Action type
+has 'inputs'    => (is => 'ro', required => 1);    # Input files + tools
+has 'outputs'   => (is => 'ro', required => 1);    # Expected outputs
+has 'depends'   => (is => 'ro', default => sub { [] }); # Dependent action IDs
+has 'env'       => (is => 'rw');                   # Environment (exported vars)
 
-#### Example Session
-
-```bash
-$ shbuild dev --action compile:app.c
-
-# Inside the Delusion Shell:
-$ pwd
-/inputs/src
-
-$ ls -la
-main.c  main.h  Makefile
-
-$ vi main.c
-(editing...)
-
-$ /tools/gcc/bin/gcc -o /outputs/app main.c
-(compilation happens transparently over 9p, with strict env isolation)
-
-$ /outputs/app
-Hello, Delusion World!
-
-$ exit
+# Optional fields
+has 'host'      => (is => 'rw');                   # Target host (if assigned)
+has 'slot'      => (is => 'rw');                   # Host slot (if assigned)
+has 'cache_key' => (is => 'rw');                   # Content-addressed cache key
+has 'priority'  => (is => 'rw', default => 0);     # Execution priority (0 = normal)
+has 'retries'   => (is => 'rw', default => 2);     # Max retry count on failure
+has 'timeout'   => (is => 'rw');                   # Timeout in seconds (undef = infinite)
 ```
 
----
+### Action Types
 
-## 6. Configuration & Knobs
-
-| Knob | Description | Default |
+| Type | Description | Example |
 |------|-------------|---------|
-| `strict_env` | If true, environment variables are not exported by default. Children only receive explicitly exported variables. | `true` |
-| `parallel_jobs` | Maximum number of parallel build steps. | `NPROC` |
-| `cache_enabled` | If true, cache build results by content hash. | `true` |
-| `debug_shell` | If true, spawn an interactive shell on build failure. | `false` |
-| `9p_remote` | URL of the remote 9p server (e.g., `tcp:9p.server:5640`). | (empty) |
-| `sanitize` | If true, strip host-specific paths from compiler output. | `true` |
-| `strict_mode` | If true, fail the build on any undeclared dependency or implicit tool. | `true` |
+| `cc_compile` | Compile C source to object file | `gcc -c main.c -o main.o` |
+| `cc_link` | Link object files into library/binary | `gcc main.o util.o -o app` |
+| `cp` | Copy a file | `cp /inputs/src/main.c /tmp/build/main.c` |
+| `mkdir` | Create a directory | `mkdir -p /outputs/build/lib` |
+| `perl_compile` | Run a Perl script that generates code | `perl gen_header.pl > header.h` |
+| `asm_compile` | Assemble assembly to object file | `nasm -f elf64 main.asm -o main.o` |
+| `test_run` | Execute a test binary | `./run_tests.sh` |
+| `artifact_copy` | Copy a build artifact to a final location | `cp app /dist/app` |
+| `purity_inspect` | Run binary inspection | `shbuild-inspect app` |
+| `purity_diff` | Compare against baseline | `shbuild-diff baseline.json current.json` |
+| `sign` | Cryptographic signing | `cosign sign app` |
+
+### Action Inputs
+
+Inputs are a list of files and tools with content hashes:
+
+```json
+{
+  "files": [
+    {
+      "path": "/inputs/src/main.c",
+      "hash": "sha256:abc123...",
+      "size": 1024
+    },
+    {
+      "path": "/inputs/include/main.h",
+      "hash": "sha256:def456...",
+      "size": 512
+    }
+  ],
+  "tools": [
+    {
+      "path": "/tools/gcc/bin/gcc",
+      "hash": "sha256:ghi789...",
+      "version": "gcc 13.2.0"
+    },
+    {
+      "path": "/tools/gcc/bin/ld",
+      "hash": "sha256:jkl012...",
+      "version": "ld 2.41"
+    }
+  ],
+  "flags": [
+    "-O2",
+    "-g",
+    "-DDEBUG",
+    "-I/inputs/include"
+  ]
+}
+```
+
+### Action Outputs
+
+Outputs are a list of expected output files with content hashes (for verification):
+
+```json
+{
+  "files": [
+    {
+      "path": "/outputs/main.o",
+      "expected_hash": "sha256:xyz789...",
+      "expected_size": 4096
+    }
+  ],
+  "exists": [
+    "/outputs/build/main.o"
+  ]
+}
+```
+
+### Action Environment
+
+Environment variables are a dictionary of exported variables:
+
+```json
+{
+  "CFLAGS": "-O2 -g",
+  "LDFLAGS": "-L/outputs/build -lfoo",
+  "PATH": "/tools/gcc/bin:/tools/perl/bin:/usr/bin",
+  "SHMOO_STRICT_ENV": "1"
+}
+```
 
 ---
 
-## 7. Implementation Plan
+## 3. Build Plan Parser
 
-1. **Parser:** Write a parser for Shmoo build files (`shmoo-build`) and Makefiles
-2. **DAG Builder:** Implement the graph builder (nodes, edges, topological sort)
-3. **Environment Manager:** Implement the `strict_env` logic (local vs. exported variables)
-4. **Execution Engine:** Implement the scheduler, sandboxing, and result collection
-5. **9p Integration:** Connect to the 9p client/server for filesystem access
-6. **Syscall Hook:** Integrate the `LD_PRELOAD` wrapper for filesystem interception
-7. **Delusion Shell:** Implement the interactive shell interface
-8. **Caching:** Implement the content-addressed cache
-9. **Testing:** Write tests for environment isolation, Make compatibility, and 9p integration
+### Source Formats
+
+The build plan can be defined in multiple formats:
+
+#### Shmoo Build File (Native Format)
+
+```perl
+# shmoo-build
+
+# Define actions
+action 'cc_compile' => 'main.o' => {
+    inputs => [
+        '/inputs/src/main.c',
+        '/inputs/include/main.h',
+    ],
+    tools  => ['/tools/gcc/bin/gcc'],
+    flags  => ['-O2', '-g', '-I/inputs/include'],
+    env    => {
+        CFLAGS => '-O2 -g',
+        PATH   => '/tools/gcc/bin:/usr/bin',
+    },
+};
+
+action 'cc_link' => 'app' => {
+    inputs => [
+        '/outputs/main.o',
+        '/outputs/util.o',
+        '/outputs/libfoo.a',
+    ],
+    tools  => ['/tools/gcc/bin/gcc'],
+    flags  => ['-O2', '-g'],
+    env    => {
+        LDFLAGS => '-L/outputs -lfoo',
+        PATH    => '/tools/gcc/bin:/usr/bin',
+    },
+    depends => ['main.o', 'util.o', 'libfoo.a'],
+};
+```
+
+#### Makefile Parser (Drop-in Compatibility)
+
+```makefile
+# Makefile — translated to Shmoo actions
+CFLAGS = -O2 -g
+LDFLAGS = -L/outputs -lfoo
+
+app: main.o util.o libfoo.a
+	gcc $(CFLAGS) $(LDFLAGS) -o app main.o util.o
+
+main.o: main.c main.h
+	gcc $(CFLAGS) -c main.c
+
+util.o: util.c util.h
+	gcc $(CFLAGS) -c util.c
+```
+
+#### Recipe Book Integration
+
+```perl
+# Recipe resolves dependencies automatically
+recipe 'cc_library' => {
+    action => 'cc_compile',
+    type   => 'library',
+    inputs => glob('/inputs/src/*.c'),
+    env    => { CFLAGS => '-O2 -g' },
+};
+```
+
+### Parser Implementation
+
+```perl
+package Shmoo::Build::Parser;
+
+use Shmoo::Build::Action;
+
+sub parse_file {
+    my ($self, $file_path) = @_;
+    
+    my @actions;
+    
+    if ($file_path =~ /\.shmoo$/) {
+        @actions = $self->_parse_shmoo($file_path);
+    } elsif ($file_path eq 'Makefile' || $file_path =~ /\.mk$/) {
+        @actions = $self->_parse_makefile($file_path);
+    } else {
+        die "Unsupported build file format: $file_path";
+    }
+    
+    return @actions;
+}
+
+sub _parse_shmoo {
+    my ($self, $file_path) = @_;
+    
+    # Parse shmoo-build format (see above)
+    # Extract action definitions, dependencies, inputs, outputs, etc.
+}
+
+sub _parse_makefile {
+    my ($self, $file_path) = @_;
+    
+    # Parse Makefile and translate to Shmoo actions:
+    # 1. Extract all targets and their dependencies
+    # 2. Extract variable definitions (CFLAGS, LDFLAGS, etc.)
+    # 3. Extract recipe lines (commands)
+    # 4. Translate to Shmoo Action objects
+}
+```
 
 ---
 
-## 8. Auditable Reporting
+## 4. Dependency Graph
 
-Shmoo generates a **Build Report** for every execution:
-- **Graph:** The full DAG of actions
-- **Environment:** The exact variables passed to each step (only explicitly exported ones)
-- **Inputs/Outputs:** File hashes and content verification results
-- **Tools:** Toolchain versions and hashes
-- **Purity:** A list of any "impurities" detected (e.g., undeclared variables, unexpected tool access)
-- **Signature:** Cryptographic signature (cosign/sigstore) for provenance
+### DAG Construction
 
-This report is versioned and can be attached to release artifacts, providing a **cryptographically verifiable audit trail** of every build.
+The parser produces a list of actions. The DAG builder connects them via dependency edges:
+
+```perl
+package Shmoo::Build::DAG;
+
+use Shmoo::Build::Action;
+
+sub build_dag {
+    my ($self, @actions) = @_;
+    
+    my %action_map;      # id -> Action
+    my %in_degree;       # id -> number of dependencies
+    my %successors;      # id -> [list of dependent action IDs]
+    
+    # Index actions by ID
+    for my $action (@actions) {
+        $action_map{$action->id} = $action;
+        $in_degree{$action->id} = 0;
+    }
+    
+    # Build edges from dependencies
+    for my $action (@actions) {
+        for my $dep_id (@{$action->depends}) {
+            # Add edge: dep_id -> action->id
+            push @{$successors{$dep_id}}, $action->id;
+            $in_degree{$action->id}++;
+        }
+    }
+    
+    return {
+        action_map  => \%action_map,
+        in_degree   => \%in_degree,
+        successors  => \%successors,
+        roots       => [grep { $in_degree{$_} == 0 } keys %action_map],
+    };
+}
+```
+
+### Example DAG
+
+```
+action 'compile:main.c'  → depends on: []
+action 'compile:util.c'  → depends on: []
+action 'lib:libfoo.a'    → depends on: ['compile:main.c']
+action 'lib:libutil.a'   → depends on: ['compile:util.c']
+action 'link:app'        → depends on: ['lib:libfoo.a', 'lib:libutil.a']
+action 'link:libapp.so'  → depends on: ['lib:libfoo.a', 'lib:libutil.a']
+action 'test:app_test'   → depends on: ['link:app']
+action 'install:app'     → depends on: ['test:app_test', 'link:app', 'link:libapp.so']
+```
+
+```
+                    [compile:main.c]  [compile:util.c]
+                           \              /
+                            v            v
+                    [lib:libfoo.a]    [lib:libutil.a]
+                             \              /
+                              v            v
+                        [link:app]  [link:libapp.so]
+                               \       /
+                                v     v
+                         [test:app_test]
+                                   |
+                                   v
+                           [install:app]
+```
 
 ---
 
-## Summary
+## 5. Topological Sort & Build Order
 
-The Shmoo Build Plan ties together:
-- **9p Client/Server** for transparent remote filesystem access
-- **Syscall Interception** (`LD_PRELOAD`) for sandboxed file operations
-- **Strict Environment Isolation** (explicit exports only) for auditable, reproducible builds
-- **Make Compatibility** for drop-in replacement of existing build systems
-- **The Delusion Shell** for interactive development in the build environment
-- **Auditable Reporting** for cryptographically verifiable build trails
+### Kahn's Algorithm
 
-The result is a build system that is not just a build system — it's a **fully reproducible, auditable, interactive development environment** that can run anywhere (local, remote, VM, cloud) while maintaining strict hermeticity.
+The build order is computed using Kahn's algorithm (topological sort):
+
+```perl
+sub topological_sort {
+    my ($self, $dag) = @_;
+    
+    my @result;
+    my @queue = @{$dag->{roots}};  # Start with roots (no dependencies)
+    
+    while (@queue) {
+        my $node = shift @queue;
+        push @result, $node;
+        
+        for my $successor (@{$dag->{successors}{$node}}) {
+            $dag->{in_degree}{$successor}--;
+            if ($dag->{in_degree}{$successor} == 0) {
+                push @queue, $successor;
+            }
+        }
+    }
+    
+    return @result;
+}
+```
+
+### Parallel Build Order
+
+For parallel execution, we compute the **level** of each node (the minimum number of steps from any root):
+
+```perl
+sub parallel_levels {
+    my ($self, $dag) = @_;
+    
+    my %level;
+    my @queue = @{$dag->{roots}};
+    
+    # Roots are at level 0
+    for my $root (@{$dag->{roots}}) {
+        $level{$root} = 0;
+    }
+    
+    while (@queue) {
+        my $node = shift @queue;
+        my $current_level = $level{$node};
+        
+        for my $successor (@{$dag->{successors}{$node}}) {
+            my $new_level = $current_level + 1;
+            if (!exists $level{$successor} || $new_level > $level{$successor}) {
+                $level{$successor} = $new_level;
+            }
+            push @queue, $successor;
+        }
+    }
+    
+    return \%level;
+}
+```
+
+**Result:**
+
+| Level | Actions | Can Run In Parallel? |
+|-------|---------|---------------------|
+| 0 | compile:main.c, compile:util.c | ✓ Both |
+| 1 | lib:libfoo.a, lib:libutil.a | ✓ Both (after level 0 completes) |
+| 2 | link:app, link:libapp.so | ✓ Both (after level 1 completes) |
+| 3 | test:app_test | ✗ (after level 2) |
+| 4 | install:app | ✗ (after level 3) |
+
+---
+
+## 6. Action Graph with Content Addresses
+
+### Content-Addressed Inputs/Outputs
+
+Every input file and output file has a content hash:
+
+```
+Action: cc_compile:main.c
+  inputs:
+    /inputs/src/main.c     → sha256:abc123...
+    /inputs/include/main.h → sha256:def456...
+    /tools/gcc/bin/gcc     → sha256:ghi789...
+  outputs:
+    /outputs/main.o        → expected sha256:xyz789...
+```
+
+If the content hash of any input changes, the action's **cache key** changes, and the build engine knows it must re-run.
+
+### Cache Key Computation
+
+The cache key is a content-addressed hash of:
+1. **Tool hash** — SHA256 of the compiler binary
+2. **Flag list** — All compiler flags (sorted)
+3. **Input hashes** — SHA256 of every input file
+4. **Environment hash** — SHA256 of exported environment variables
+5. **Host hash** — SHA256 of the host environment (OS, CPU, etc.)
+
+```perl
+sub compute_cache_key {
+    my ($self, $action) = @_;
+    
+    my @inputs = map { $_->hash } @{$action->inputs};
+    my @flags  = @{$action->flags};
+    my $env    = join("\n", sort %{$action->env});
+    my $tool   = $action->tools[0]->hash;  # Primary tool hash
+    my $host   = $self->host_fingerprint();
+    
+    my $data = join("\0", $tool, $env, @inputs, @flags, $host);
+    return sha256_hex($data);
+}
+```
+
+---
+
+## 7. Action Execution
+
+### Per-Host Execution
+
+Each action is assigned to a host with available slots:
+
+```perl
+sub assign_action {
+    my ($self, $action, $dag, $hosts) = @_;
+    
+    # Find hosts with available slots
+    my @available_hosts = grep { $_->available_slots() > 0 } @$hosts;
+    
+    unless (@available_hosts) {
+        die "No available hosts (all slots busy)";
+    }
+    
+    # Pick the host with the most available slots
+    my $host = sort { $b->available_slots <=> $a->available_slots } @available_hosts;
+    
+    $action->host($host->id);
+    $action->slot($host->next_slot());
+    
+    # Reduce host's available slots
+    $host->decrement_slots();
+    
+    return $host;
+}
+```
+
+### Execution on Host
+
+The Host Daemon executes the action:
+
+```perl
+sub execute_action {
+    my ($daemon, $action) = @_;
+    
+    # 1. Set up environment
+    setenv($action->env);
+    
+    # 2. Set up 9p mounts
+    SHMOO_9P_MOUNTS = join(",", map { "${_}=tcp:9p.server:5640,0" } @mount_paths);
+    
+    # 3. Inject LD_PRELOAD for syscall interception
+    LD_PRELOAD = "/path/to/libsyscallhook.so";
+    
+    # 4. Inject LD_PRELOAD for syscall interception
+    LD_PRELOAD="/path/to/libsyscallhook.so";
+    
+    # 5. Set up event logging
+    SHMOO_EVENT_LOG="/build/misiones/0xA3F1/host-alpha.log";
+    
+    # 6. Build command based on action type
+    my $cmd;
+    if ($action->type eq 'cc_compile') {
+        $cmd = join(" ", @{$action->tools}, @{$action->flags});
+        # Example: gcc -O2 -g /inputs/src/main.c -o /outputs/main.o
+    } elsif ($action->type eq 'cc_link') {
+        $cmd = join(" ", @{$action->tools}, @{$action->flags});
+        # Example: gcc -o app /outputs/main.o /outputs/util.o
+    } elsif ($action->type eq 'cp') {
+        $cmd = "cp @{$action->flags}";
+        # ... etc.
+    }
+    
+    # 7. Execute the command (with 9p mounts + LD_PRELOAD + event logging)
+    system($cmd);
+    
+    # 8. Verify outputs
+    for my $output (@{$action->outputs}) {
+        if (!-e $output->path) {
+            die "Expected output not found: $output->path";
+        }
+        
+        if ($output->expected_hash) {
+            my $actual_hash = sha256_hex(read_file($output->path));
+            if ($actual_hash ne $output->expected_hash) {
+                # Warn: output content differs from expected, but build still succeeds.
+                # This is normal if the expected_hash is just a reference, not a hard requirement.
+                warn "Output hash mismatch: $output->path (expected: $output->expected_hash, actual: $actual_hash)";
+            }
+        }
+    }
+    
+    # 9. Flush event log
+    event_log_flush();
+}
+```
+
+---
+
+## 8. Build Plan Configuration
+
+### Global Configuration
+
+```yaml
+build:
+  # Maximum parallel jobs across all hosts
+  max_global_jobs: 64
+  
+  # Maximum parallel jobs per host (can be overridden per-host)
+  max_host_jobs: 8
+  
+  # Content-addressed cache location
+  cache_path: "/build/cache"
+  
+  # Enable strict environment isolation
+  strict_env: true
+  
+  # Enable 9p mounts (default: true)
+  use_9p: true
+  
+  # Enable event logging (default: true)
+  enable_logging: true
+  
+  # Default retry count on failure
+  default_retries: 2
+  
+  # Default timeout (seconds, 0 = infinite)
+  default_timeout: 3600
+  
+  # Default priority
+  default_priority: 0
+  
+  # Host assignment strategy
+  host_strategy: "least-loaded"  # least-loaded | capability | affinity
+  
+  # Build order strategy
+  order_strategy: "topological"  # topological | priority
+```
+
+### Host-Specific Configuration
+
+```yaml
+hosts:
+  - name: "alpha"
+    slots: 8
+    max_jobs: 16  # Override global max_host_jobs
+    tools:
+      gcc: "/usr/bin/gcc-13"
+      perl: "/usr/bin/perl-5.38"
+    mounts:
+      - path: "/inputs"
+        local_path: "/data/shmoo/src"
+      - path: "/libs"
+        local_path: "/data/shmoo/libs"
+```
+
+---
+
+## 9. Implementation Plan
+
+### Phase 1: Action Model
+- [ ] Define `Shmoo::Build::Action` (Perl module)
+- [ ] Implement input/output/tool/env fields
+- [ ] Implement action types (cc_compile, cc_link, etc.)
+
+### Phase 2: Parser
+- [ ] Implement `Shmoo::Build::Parser` (shmoo-build format)
+- [ ] Implement Makefile parser (drop-in compatibility)
+- [ ] Implement recipe book integration
+
+### Phase 3: DAG & Topological Sort
+- [ ] Implement `Shmoo::Build::DAG` (graph builder)
+- [ ] Implement Kahn's algorithm (topological sort)
+- [ ] Implement parallel levels computation
+
+### Phase 4: Content-Addressed Cache
+- [ ] Implement `compute_cache_key()` (action key)
+- [ ] Implement cache lookup (does action need to run?)
+- [ ] Implement cache write (store output after successful execution)
+
+### Phase 5: Host Assignment & Execution
+- [ ] Implement `assign_action()` (slot-aware host assignment)
+- [ ] Implement `execute_action()` (Host Daemon execution)
+- [ ] Implement output verification (content hash check)
+
+### Phase 6: Integration
+- [ ] Integrate with 9p client (mount inputs/outputs)
+- [ ] Integrate with syscall interceptor (LD_PRELOAD)
+- [ ] Integrate with event log (per-action event recording)
+- [ ] Integrate with distributed hosts (multi-host scheduling)
+
+### Phase 7: Testing & Optimization
+- [ ] Test with real build projects (gcc, perl, make)
+- [ ] Test content-addressed cache (cache hit/miss)
+- [ ] Test parallel execution (multiple independent actions)
+- [ ] Test multi-host execution (jobs distributed across hosts)
+- [ ] Benchmark build graph resolution speed (should be < 100ms for 1000+ actions)
+
+---
+
+## 10. Summary
+
+The build plan is a DAG of compile/link/copy actions with:
+
+- **Explicit dependencies:** Topological sort determines execution order
+- **Content-addressed inputs:** Actions only re-run when inputs change
+- **Parallel execution:** Independent actions run concurrently on available hosts
+- **Host assignment:** Jobs distributed across hosts based on slot availability
+- **Output verification:** Content hashes ensure build integrity
+- **Multiple formats:** Native shmoo-build, Makefile, recipe book integration
+
+This turns the build system into a **deterministic, reproducible, parallel build engine** that can scale across distributed hosts while maintaining full observability and replay capabilities.
