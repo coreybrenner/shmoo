@@ -114,11 +114,51 @@ Each parallel build job runs in its own process and writes to its own **Local Lo
 
 ---
 
-## 4. Socket Stream Protocol (Stream Joining)
+## 4. Distributed Host Architecture
 
-### Connection Handshake
+Each parallel build host runs its own **Host Daemon** that:
+- Manages local job slots independently (no central coordinator bottleneck)
+- Serves 9p filesystem requests for its host's build tree
+- Writes events to a **per-host local log** with disjoint EID ranges
+- Optionally flushes events to a **global log** for cross-host replay
+- Communicates with a **Mission Coordinator** that assigns DAG nodes to host slots
+
+### Event Log Strategies
+
+The global build trace can be stored in three modes:
+
+| Mode | Structure | Replay | Best For |
+|------|-----------|--------|----------|
+| **Monolithic** | One joined log, EIDs assigned centrally | Simple single-stream replay | Small missions (< 20 hosts), maximum replay simplicity |
+| **Per-host** | One log file per host, disjoint EID ranges | Multi-log merge, EID index | Large-scale distributed, fault tolerance critical |
+| **Hybrid** (default) | Per-host logs + global index + checkpoints | Checkpoint restore + per-host log replay | General-purpose, best balance of simplicity and scalability |
+
+### EID Assignment
+
+With per-host or hybrid mode, EID ranges are **disjoint per host**:
+- Host A: EIDs 1,000,000 – 1,999,999
+- Host B: EIDs 2,000,000 – 2,999,999
+- Host C: EIDs 3,000,000 – 3,999,999
+
+This means each host writes to its local log without any coordination or locking with other hosts. The global index maps EID ranges to hosts for seeking.
+
+### Monolithic Mode
+
+When configured as monolithic, the coordinator assigns global EIDs and all hosts flush their events to the coordinator for a single joined log. This is simplest for replay but makes the coordinator a bottleneck.
+
+### Per-Host Mode
+
+Each host writes to its own log file independently. No coordination between hosts. The global index maps EID ranges to hosts. Replay requires reading from multiple log files and using the index.
+
+### Hybrid Mode (Recommended Default)
+
+A compromise: per-host log files for fault tolerance and locality, but the coordinator periodically indexes and checkpoints events for efficient cross-host replay. A global stream file can be optionally maintained for live monitoring.
+
+### Socket Stream Protocol
 
 Each job opens a Unix domain socket (or TCP loopback) to the Monitor:
+
+#### Connection Handshake
 
 ```
 Job → Monitor:
