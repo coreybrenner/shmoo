@@ -158,6 +158,30 @@ $ shbuild refund --action compile:app.c
 
 ---
 
+## 5. Interactive Graph UI — Visual Parameter Tracing
+
+The build graph is not just a passive visualization; it is an **active interface** for exploring the build environment.
+
+### The "Glass Box" Concept
+Instead of just seeing a static map, the engineer can **interact with the graph itself**:
+- **Grab a Node:** Click and expand a node (e.g., a specific compiler invocation or a Make rule).
+- **Open Up Parameters:** View the internal variables, flags, and dependencies of that node.
+- **Mess Around:** Change a variable directly in the UI (e.g., tweak `CFLAGS` from `-O2` to `-O3`).
+- **Watch the Ripple:** The graph immediately highlights all affected nodes **downstream** (in the subtree) based on the variable change.
+
+### Instructional Mode
+This is "incredibly instructive" because it visualizes the **causal chain** of the build:
+- **Highlighting:** Affected nodes light up (yellow/red) as the engineer changes the parameter.
+- **Explanation:** The UI annotates *why* a change propagated ("Node X changed because `CFLAGS` depends on Variable Y").
+- **Safe Exploration:** The engineer can "mess around" in a sandbox mode without committing the changes.
+
+### Visualizing the Stack
+Because the graph represents the **entire stack** (shell → Make → Perl → compiler), changing a variable at any level instantly shows the blast radius across all levels.
+
+This turns the build graph into a **dependency simulator**, making the invisible structure of the build visible and interactive.
+
+---
+
 ## 6. Summary
 
 This advanced Delusion Shell is a **reactive, visual build IDE**:
