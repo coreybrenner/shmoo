@@ -1,7 +1,7 @@
 # Design: Advanced Delusion Shell & Reactive Build Graph
 
 *2025-01-23 | Status: Active Design*
-*Purpose: The "one-command" is an editable file on the Virtual Execution Path (VXP), not a REPL history entry. The build engineer works across many levels of the environment. Variable changes are traced through the entire process stack — from shell variables in the third recursive invocation of Make down to the compiler — and the integrated total build graph reflects ramifications visually in real-time (nodes turn red as changes propagate).*
+*Purpose: The "one-command" is an editable file on the Virtual Execution Path (VXP), not a REPL history entry. The build engineer works across many levels of the environment. Variable changes trace through the entire process stack — from shell variables in the third recursive invocation of Make down to the compiler — and the integrated total build graph reflects ramifications visually in real-time (nodes turn red as changes propagate).*
 
 ---
 
@@ -128,36 +128,6 @@ Once the engineer is happy with the fix (and the graph turns green for all affec
 
 ---
 
-## 5. Implementation: The VXP Editor Workflow
-
-The delshell provides a seamless editing experience:
-
-```bash
-# Enter delshell after build failure:
-$ shbuild dev --action compile:app.c
-
-# Inside the Delusion Shell:
-$ ls -la /shmoo/vxp/
-build-target.mk  (VXP file)
-
-# Open the VXP in the engineer's preferred editor:
-$ edit /shmoo/vxp/build-target.mk
-
-# Engineer makes changes:
-#   export CFLAGS = -O3 -DDEBUG -g  (Modified)
-#   $(CC) $(CFLAGS) -o app app.c    (Modified)
-
-# Engineer saves and exits the editor.
-# The overlay filesystem updates.
-# The Build Graph UI updates (Yellow/Red ripple across the whole project).
-
-# Engineer is happy with the result (Green ripple).
-$ shbuild refund --action compile:app.c
-# Restarts build with changes applied.
-```
-
----
-
 ## 5. Interactive Graph UI — Visual Parameter Tracing
 
 The build graph is not just a passive visualization; it is an **active interface** for exploring the build environment.
@@ -182,15 +152,84 @@ This turns the build graph into a **dependency simulator**, making the invisible
 
 ---
 
-## 6. Summary
+## 6. Graph Visualization Semantics — Colors & Roots of Failure
+
+The graph is color-coded to tell the story of the failure. Colors indicate not just "success/failure," but *uncertainty* and *dependency*.
+
+### The Color Hierarchy
+
+*   **Green Nodes (The Safe Zone):**
+    *   Built successfully *before* the logical point of the proposed change.
+    *   Built successfully outside the scope of the proposed change.
+    *   These are "Known Good" nodes.
+
+*   **Red Nodes (The Causal Chain):**
+    *   The **Red Path** is the direct line of effect between a change and a failure.
+    *   If a variable at `EID 100` causes a compiler to fail at `EID 500`, the chain `EID 100 → ... → EID 500` is **Red**.
+    *   **Locus of the Error:** If a "forest of red lines" (multiple failures, e.g., Compiler A, Compiler B, Linker C) all converge on a single node (e.g., a bad header file or a specific `export CFLAGS` line), that node is the **Locus**.
+    *   *Note:* Multiple red lines clustering at a node strongly indicates a root cause there.
+
+*   **Pink Nodes (The Unknown / "What If" Zone):**
+    *   Nodes *beyond* the failed node.
+    *   *Logic:* We know the compiler failed (so that execution is the end of that red line). But if the compiler *had* succeeded, would the linker (which depends on it) succeed, or would *it* fail?
+    *   Pink = **Speculative Survival**. The node *ran* (or would have run), but its outcome is unknown because we interrupted the real chain to speculate.
+
+*   **Yellow Nodes (The Dependency Blockade):**
+    *   Nodes that *could not execute* because a prerequisite was missing.
+    *   *Logic:* "Speculatively or in reality, no `libfoo` was built. Therefore, any program that links `libfoo` is Yellow."
+    *   Yellow = **Blocked by Missing Artifact**.
+
+### Visualizing the "Forest"
+In a complex scope, a single bad variable (e.g., `-I/path/to/corrupted/header`) might cause 100 compilers to fail. The graph shows 100 Red Paths converging on that header file. This visual clustering is the primary indicator of the **Root Cause**.
+
+---
+
+## 7. Variable-Centric Tracing — The "Glass Box"
+
+Variables are not just metadata; they are **graph nodes**.
+
+### The Variable Dependency Tree
+Every variable (`CFLAGS`, `LIB_PATH`, `SPECIAL_OPTION`) has a node.
+Every *use* of a variable (e.g., "Compiler A used CFLAGS") has an edge connecting the Variable Node to the Action Node.
+
+### Tracing the "Recursive Closure"
+When a failure occurs:
+1.  **Identify Direct Variables:** Look at the compiler that failed. Which variables did it use? (`CFLAGS`, `LDFLAGS`, `TMPDIR`).
+2.  **Trace Origins:** Trace where those variables came from.
+    *   `CFLAGS` came from the Makefile (`export CFLAGS=-O2`).
+    *   `TMPDIR` came from the Shell (`export TMPDIR=/mnt/vol/tmp`).
+3.  **Inspect the Full Set:** The graph displays the **entire set of recorded origins** and the **recursive closure**.
+    *   *User Story:* "I want to see the value of every variable the compiler used at the moment it failed."
+4.  **Time-Travel Inspection:**
+    *   "Dial back in time": Inspect the values of these variables *at the moment of failure*.
+    *   "Query the environment": Ask "What was the value of $PATH when the linker started?"
+
+### Speculation Contexts (Push/Pop)
+*   **Push Context:** "Change CFLAGS from `-O2` to `-O3`."
+    *   The graph highlights all nodes dependent on `CFLAGS` (Yellow/Red/Pink).
+    *   The engine calculates the "Fan-Out": "Here is every place `$CFLAGS` was read."
+*   **Pop Context:** Revert to the original state.
+*   **Nested Speculation:**
+    *   "What if `CFLAGS` is `-O3` AND `LDFLAGS` includes `-L/custom`?"
+    *   The engine overlays these changes and shows the **Delta Impact**: "Changing `LDFLAGS` would break 3 specific links, but changing `CFLAGS` would fix the compiler."
+
+### Interactive Variable Manipulation
+*   **Right-click Variable Node:** "Inspect Value," "Edit Value," "Delete Value."
+*   **"Who took a value from $FOO?":** Click on `$CFLAGS` in the graph → highlights every Action Node that read it.
+
+This turns the build graph into a **variable topology map**, making it easy to find the "leaking" variables or the "missing" variables that caused the failure.
+
+---
+
+## 8. Summary
 
 This advanced Delusion Shell is a **reactive, visual build IDE**:
 - **VXP:** An editable file on the virtual execution path that captures the failure context
-- **Visual Graph:** A live, color-coded map of the entire build state
+- **Visual Graph:** A live, color-coded map of the entire build state (Green/Red/Yellow/Pink)
 - **Ripple Effect:** Real-time propagation of variable changes through the entire process stack (shell → Make → Perl wrappers → compiler)
 - **Deep Recursion:** Traces changes across multiple recursive invocations of build tools, down the entire stack
 - **Global Awareness:** The system knows how a local change affects every node in the total build graph
+- **Variable Tracing:** First-class variable nodes with full origin tracing and speculative context management
 - **Scope Refunding:** A clean way to commit changes and re-run the build
 
 This makes Shmoo a true **build environment** that the engineer can explore, modify, and understand visually — not just a black box that fails and succeeds.
-
